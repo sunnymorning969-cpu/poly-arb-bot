@@ -275,8 +275,8 @@ export const cleanExpiredPositions = (): SettlementResult[] => {
 /**
  * 获取结算历史
  */
-export const getSettlementHistory = (): SettlementResult[] => {
-    return [...settlementHistory];
+export const getSettlementHistory = () => {
+    return getStoredHistory();
 };
 
 /**
