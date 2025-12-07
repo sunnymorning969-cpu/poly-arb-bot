@@ -313,12 +313,38 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
     // slug 变化了，需要重新获取
     if (slugsChanged && lastSlugs.length > 0) {
         Logger.info(`🔄 检测到事件切换，更新市场订阅...`);
+        Logger.info(`   旧: ${lastSlugs.slice(2).join(', ')}`);  // 只显示 15 分钟的
+        Logger.info(`   新: ${currentSlugs.slice(2).join(', ')}`);
     }
     
     try {
         // 并行获取所有市场
         const marketPromises = currentSlugs.map(slug => fetchEventBySlug(slug));
         const results = await Promise.all(marketPromises);
+        
+        // 检查是否有市场获取失败
+        const failedCount = results.filter(r => r === null).length;
+        if (failedCount > 0) {
+            Logger.warning(`   ⚠️ ${failedCount} 个市场获取失败，可能新事件尚未创建，5秒后重试...`);
+            
+            // 5 秒后重试一次
+            await new Promise(r => setTimeout(r, 5000));
+            const retryResults = await Promise.all(currentSlugs.map(slug => fetchEventBySlug(slug)));
+            
+            // 合并结果：使用重试成功的替换原来失败的
+            for (let i = 0; i < results.length; i++) {
+                if (results[i] === null && retryResults[i] !== null) {
+                    results[i] = retryResults[i];
+                }
+            }
+            
+            const stillFailed = results.filter(r => r === null).length;
+            if (stillFailed > 0) {
+                Logger.warning(`   ⚠️ 重试后仍有 ${stillFailed} 个市场不可用`);
+            } else {
+                Logger.success(`   ✅ 重试成功，所有市场已获取`);
+            }
+        }
         
         // 过滤有效且未关闭的市场
         cachedMarkets = results.filter((m): m is PolymarketMarket => {
@@ -429,20 +455,37 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
             continue;
         }
         
-        // 找出组内最便宜的 Up 和最便宜的 Down
+        // 找出组内最便宜的 Up 和最便宜的 Down（必须有深度 > 0）
         let cheapestUp: typeof markets[0] | null = null;
         let cheapestDown: typeof markets[0] | null = null;
         
         for (const m of markets) {
-            if (!cheapestUp || m.upBook.bestAsk < cheapestUp.upBook.bestAsk) {
-                cheapestUp = m;
+            // 选择最便宜的 Up（深度必须 >= 1）
+            if (m.upBook.bestAskSize >= 1 && m.upBook.bestAsk > 0.01) {
+                if (!cheapestUp || m.upBook.bestAsk < cheapestUp.upBook.bestAsk) {
+                    cheapestUp = m;
+                }
             }
-            if (!cheapestDown || m.downBook.bestAsk < cheapestDown.downBook.bestAsk) {
-                cheapestDown = m;
+            // 选择最便宜的 Down（深度必须 >= 1）
+            if (m.downBook.bestAskSize >= 1 && m.downBook.bestAsk > 0.01) {
+                if (!cheapestDown || m.downBook.bestAsk < cheapestDown.downBook.bestAsk) {
+                    cheapestDown = m;
+                }
             }
         }
         
-        if (!cheapestUp || !cheapestDown) continue;
+        // 如果找不到有深度的 Up 或 Down，记录原因并跳过
+        if (!cheapestUp || !cheapestDown) {
+            // 诊断：为什么这个时间组没有有效机会
+            if (!silent && markets.length > 0) {
+                const noUpDepth = markets.every(m => m.upBook.bestAskSize < 1 || m.upBook.bestAsk < 0.01);
+                const noDownDepth = markets.every(m => m.downBook.bestAskSize < 1 || m.downBook.bestAsk < 0.01);
+                if (noUpDepth || noDownDepth) {
+                    Logger.warning(`⚠️ ${timeGroup}: ${noUpDepth ? 'Up' : ''}${noUpDepth && noDownDepth ? '+' : ''}${noDownDepth ? 'Down' : ''} 深度不足`);
+                }
+            }
+            continue;
+        }
         
         // 获取组合仓位分析
         const groupAnalysis = getGroupCostAnalysis(timeGroup);
@@ -469,14 +512,11 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const upIsCheap = cheapestUp.upBook.bestAsk < 0.50;
         const downIsCheap = cheapestDown.downBook.bestAsk < 0.50;
         
-        // ============ 严格价格检查 ============
-        // 跳过无效价格（< $0.01 视为无效）
+        // 获取价格和深度（已在选择时验证过）
         const upPrice = cheapestUp.upBook.bestAsk;
         const downPrice = cheapestDown.downBook.bestAsk;
-        
-        if (upPrice < 0.01 || downPrice < 0.01) {
-            continue;  // 跳过异常低价
-        }
+        const upSize = cheapestUp.upBook.bestAskSize;
+        const downSize = cheapestDown.downBook.bestAskSize;
         
         // ============ 核心套利条件 ============
         // 只有 Up + Down < $1.00 才是真正的套利机会

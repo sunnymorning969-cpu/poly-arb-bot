@@ -135,6 +135,11 @@ export const notifyTradeExecuted = async (
         expectedProfit: number;
     }
 ): Promise<void> => {
+    // 如果没有任何成交，不发送通知（避免发送失败的空消息）
+    if (result.upFilled === 0 && result.downFilled === 0) {
+        return;
+    }
+    
     const emoji = result.success ? '✅' : '❌';
     
     // 判断交易类型
@@ -165,10 +170,16 @@ export const notifyTradeExecuted = async (
         detailLines += `   • Down: ${result.downFilled.toFixed(1)} shares @ $${downPrice}\n`;
     }
     
+    // 跨池子标记
+    const crossPoolTag = opportunity.isCrossPool ? '🔀跨池 ' : '';
+    const upSource = opportunity.upMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+    const downSource = opportunity.downMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+    const sourceInfo = opportunity.isCrossPool ? `${upSource}↑ + ${downSource}↓` : opportunity.timeGroup;
+    
     const message = `
-${emoji} ${tradeIcon} <b>${tradeType}${status}</b>
+${emoji} ${tradeIcon} <b>${crossPoolTag}${tradeType}${status}</b>
 
-📊 ${opportunity.slug.slice(0, 35)}
+📊 ${sourceInfo} | ${opportunity.slug.slice(0, 25)}
 
 📝 <b>成交:</b>
 ${detailLines}   • 成本: $${result.totalCost.toFixed(2)}

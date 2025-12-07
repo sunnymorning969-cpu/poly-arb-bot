@@ -121,12 +121,17 @@ const selectOpportunities = (
             continue;  // 跳过异常价格
         }
         
-        // 2. buy_both 必须满足合计 < $1.00
+        // 2. 深度检查（必须有至少 1 share 可买）
+        if (opp.upAskSize < 1 || opp.downAskSize < 1) {
+            continue;  // 跳过深度不足
+        }
+        
+        // 3. buy_both 必须满足合计 < $1.00
         if (opp.tradingAction === 'buy_both' && opp.combinedCost >= 0.995) {
             continue;  // 合计 >= $0.995 不是真正套利
         }
         
-        // 3. 冷却检查（跨池子时检查两个市场）
+        // 4. 冷却检查（跨池子时检查两个市场）
         if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
             continue;
         }
