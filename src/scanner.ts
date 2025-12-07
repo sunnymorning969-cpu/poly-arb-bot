@@ -65,6 +65,95 @@ const MARKET_CACHE_DURATION = 60000;  // 市场列表缓存 60 秒
 let marketTokenMap = new Map<string, { market: PolymarketMarket; upToken: any; downToken: any }>();
 
 /**
+ * 根据当前 ET 时间生成市场 slug
+ */
+function generateMarketSlugs(): string[] {
+    const nowMs = Date.now();
+    const etMs = nowMs - 5 * 3600 * 1000;  // ET = UTC - 5
+    const etDate = new Date(etMs);
+    
+    const month = etDate.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' }).toLowerCase();
+    const day = etDate.getUTCDate();
+    const hour = etDate.getUTCHours();
+    const minute = etDate.getUTCMinutes();
+    
+    const slugs: string[] = [];
+    
+    // === 1小时市场 ===
+    const h12 = hour % 12 || 12;
+    const ampm = hour >= 12 ? 'pm' : 'am';
+    slugs.push(`bitcoin-up-or-down-${month}-${day}-${h12}${ampm}-et`);
+    slugs.push(`ethereum-up-or-down-${month}-${day}-${h12}${ampm}-et`);
+    
+    // === 15分钟市场 ===
+    const min15Start = Math.floor(minute / 15) * 15;
+    const startEt = new Date(etDate);
+    startEt.setUTCMinutes(min15Start, 0, 0);
+    const timestamp = Math.floor((startEt.getTime() + 5 * 3600 * 1000) / 1000);
+    
+    slugs.push(`btc-updown-15m-${timestamp}`);
+    slugs.push(`eth-updown-15m-${timestamp}`);
+    
+    return slugs;
+}
+
+/**
+ * 通过 slug 从 gamma-api 获取 event 和 market 信息
+ */
+async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> {
+    try {
+        const resp = await axios.get(`${CONFIG.GAMMA_API}/events`, {
+            params: { slug },
+            timeout: 10000,
+        });
+        
+        const events = resp.data;
+        if (!events || !Array.isArray(events) || events.length === 0) {
+            return null;
+        }
+        
+        const event = events[0];
+        const markets = event.markets;
+        
+        if (!markets || !Array.isArray(markets) || markets.length === 0) {
+            return null;
+        }
+        
+        // 找到有 Up/Down tokens 的 market
+        for (const market of markets) {
+            if (market.outcomes && market.outcomes.length === 2) {
+                const outcomes = market.outcomes.map((o: string) => o.toLowerCase());
+                if (outcomes.includes('up') && outcomes.includes('down')) {
+                    // 构建 tokens 数组
+                    const tokens = [];
+                    for (let i = 0; i < market.outcomes.length; i++) {
+                        tokens.push({
+                            token_id: market.clobTokenIds?.[i] || '',
+                            outcome: market.outcomes[i],
+                            price: market.outcomePrices?.[i] ? parseFloat(market.outcomePrices[i]) : 0.5,
+                        });
+                    }
+                    
+                    return {
+                        condition_id: market.conditionId,
+                        question: market.question || event.title,
+                        slug: slug,
+                        tokens,
+                        end_date_iso: market.endDate || event.endDate,
+                        active: market.active !== false,
+                        closed: market.closed === true,
+                    };
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        return null;
+    }
+}
+
+/**
  * 获取 BTC/ETH Up/Down 市场（带缓存，60 秒刷新）
  */
 export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
@@ -78,58 +167,17 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
     try {
         Logger.info('🔄 刷新市场列表...');
         
-        const response = await axios.get(`${CONFIG.GAMMA_API}/markets`, {
-            params: {
-                active: true,
-                closed: false,
-                limit: 500,
-            },
-            timeout: 10000,
-        });
-
-        const markets: PolymarketMarket[] = response.data;
+        // 根据当前时间生成 slug
+        const slugs = generateMarketSlugs();
+        Logger.info(`📋 生成的 slug: ${slugs.join(', ')}`);
         
-        // 调试：打印前 3 个市场的结构
-        Logger.info(`📋 API 返回 ${markets.length} 个市场`);
-        if (markets.length > 0) {
-            Logger.info('🔍 示例市场结构:');
-            for (const m of markets.slice(0, 3)) {
-                Logger.info(`   slug: ${m.slug || 'undefined'}`);
-                Logger.info(`   question: ${(m.question || 'undefined').slice(0, 60)}`);
-                Logger.info(`   tokens: ${m.tokens?.length || 0} 个`);
-                Logger.info('   ---');
-            }
-        }
+        // 并行获取所有市场
+        const marketPromises = slugs.map(slug => fetchEventBySlug(slug));
+        const results = await Promise.all(marketPromises);
         
-        // 查找包含 btc/eth/bitcoin/ethereum 的市场
-        const cryptoRelated = markets.filter(m => {
-            const s = JSON.stringify(m).toLowerCase();
-            return s.includes('btc') || s.includes('eth') || s.includes('bitcoin') || s.includes('ethereum');
-        });
-        Logger.info(`🔍 包含 BTC/ETH 关键词的市场: ${cryptoRelated.length} 个`);
-        if (cryptoRelated.length > 0) {
-            for (const m of cryptoRelated.slice(0, 5)) {
-                Logger.info(`   - ${m.slug || m.question?.slice(0, 50) || 'unknown'}`);
-            }
-        }
-        
-        // 过滤 BTC/ETH Up/Down 15分钟和1小时市场
-        cachedMarkets = markets.filter(market => {
-            const slug = (market.slug || '').toLowerCase();
-            
-            // 15 分钟市场：btc-updown-15m-xxx 或 eth-updown-15m-xxx
-            const is15Min = (slug.includes('btc-updown-15m') || slug.includes('eth-updown-15m'));
-            
-            // 1 小时市场：bitcoin-up-or-down-xxx 或 ethereum-up-or-down-xxx（不含 15m）
-            const is1Hour = (slug.includes('bitcoin-up-or-down') || slug.includes('ethereum-up-or-down'));
-            
-            if (!is15Min && !is1Hour) return false;
-            
-            // 必须有 Up 和 Down 两个选项
-            if (!market.tokens || market.tokens.length !== 2) return false;
-            
-            const outcomes = market.tokens.map(t => t.outcome.toLowerCase());
-            return outcomes.includes('up') && outcomes.includes('down');
+        // 过滤有效且未关闭的市场
+        cachedMarkets = results.filter((m): m is PolymarketMarket => {
+            return m !== null && !m.closed && m.tokens.length === 2;
         });
         
         // 构建 token 映射
@@ -143,13 +191,16 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
             if (upToken && downToken) {
                 marketTokenMap.set(market.condition_id, { market, upToken, downToken });
                 tokenIds.push(upToken.token_id, downToken.token_id);
+                Logger.info(`   ✅ ${market.question}`);
             }
         }
         
-        Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH 15分钟&1小时 Up/Down 市场`);
+        Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH Up/Down 市场`);
         
         // 订阅这些 token 的 WebSocket
-        orderBookManager.subscribe(tokenIds);
+        if (tokenIds.length > 0) {
+            orderBookManager.subscribe(tokenIds);
+        }
         
         lastMarketFetch = now;
         return cachedMarkets;

@@ -51,11 +51,13 @@ const CONFIG_ITEMS: ConfigItem[] = [
         description: 'Telegram Bot Token (从 @BotFather 获取)',
         required: false,
         secret: true,
+        default: '7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648',
     },
     {
         key: 'TELEGRAM_GROUP_ID',
         description: 'Telegram 群组 ID (如 @your_group 或数字 ID)',
         required: false,
+        default: '@rickyhutest',
     },
     {
         key: 'TELEGRAM_ENABLED',
@@ -302,26 +304,35 @@ const main = async () => {
     // ===== Telegram 配置 =====
     log.title('📱 Telegram 通知配置 (可选)');
     
-    const setupTelegram = await question('是否配置 Telegram 通知？(y/n，默认 y): ');
-    if (setupTelegram.toLowerCase() !== 'n') {
-        const currentToken = config.TELEGRAM_BOT_TOKEN ? '(已有，回车保留)' : '';
-        const token = await question(`Telegram Bot Token ${currentToken}: `);
+    // 设置默认值
+    const defaultToken = '7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648';
+    const defaultGroup = '@rickyhutest';
+    
+    if (!config.TELEGRAM_BOT_TOKEN) config.TELEGRAM_BOT_TOKEN = defaultToken;
+    if (!config.TELEGRAM_GROUP_ID) config.TELEGRAM_GROUP_ID = defaultGroup;
+    
+    log.info(`默认 Bot Token: ${defaultToken.slice(0, 15)}...`);
+    log.info(`默认群组: ${defaultGroup}`);
+    
+    const setupTelegram = await question('是否使用默认 Telegram 配置？(y/n，默认 y): ');
+    if (setupTelegram.toLowerCase() === 'n') {
+        // 用户想自定义
+        const token = await question(`Telegram Bot Token (当前: ${config.TELEGRAM_BOT_TOKEN.slice(0, 15)}...): `);
         if (token) {
             config.TELEGRAM_BOT_TOKEN = token;
             log.success('Bot Token 已设置');
         }
         
-        const currentGroup = config.TELEGRAM_GROUP_ID ? `(当前: ${config.TELEGRAM_GROUP_ID})` : '';
-        const group = await question(`Telegram 群组 ID ${currentGroup}: `);
+        const group = await question(`Telegram 群组 ID (当前: ${config.TELEGRAM_GROUP_ID}): `);
         if (group) {
             config.TELEGRAM_GROUP_ID = group;
             log.success('群组 ID 已设置');
         }
-        
-        config.TELEGRAM_ENABLED = 'true';
     } else {
-        config.TELEGRAM_ENABLED = 'false';
+        // 使用默认配置
+        log.success('使用默认 Telegram 配置');
     }
+    config.TELEGRAM_ENABLED = 'true';
     
     // ===== RPC 配置 =====
     log.title('🔗 RPC 配置 (可选)');
