@@ -89,32 +89,15 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
 
         const markets: PolymarketMarket[] = response.data;
         
-        // 固定扫描 BTC/ETH 的 15分钟 和 1小时 市场
+        // 过滤 BTC/ETH Up/Down 15分钟和1小时市场
         cachedMarkets = markets.filter(market => {
             const slug = (market.slug || '').toLowerCase();
-            const question = (market.question || '').toLowerCase();
             
-            // 必须是 BTC 或 ETH
-            const isBTC = slug.includes('btc') || slug.includes('bitcoin') || 
-                          question.includes('btc') || question.includes('bitcoin');
-            const isETH = slug.includes('eth') || slug.includes('ethereum') || 
-                          question.includes('eth') || question.includes('ethereum');
+            // 15 分钟市场：btc-updown-15m-xxx 或 eth-updown-15m-xxx
+            const is15Min = (slug.includes('btc-updown-15m') || slug.includes('eth-updown-15m'));
             
-            if (!isBTC && !isETH) return false;
-            
-            // 必须是 Up/Down 市场
-            const isUpDown = slug.includes('updown') || slug.includes('up-or-down') ||
-                             question.includes('up or down');
-            
-            if (!isUpDown) return false;
-            
-            // 必须是 15分钟 或 1小时 周期
-            const is15Min = slug.includes('15') || slug.includes('fifteen') ||
-                            question.includes('15') || question.includes('fifteen');
-            const is1Hour = slug.includes('1-hour') || slug.includes('1hour') || 
-                            slug.includes('hourly') || slug.includes('60') ||
-                            question.includes('1 hour') || question.includes('one hour') ||
-                            question.includes('hourly') || question.includes('60 min');
+            // 1 小时市场：bitcoin-up-or-down-xxx 或 ethereum-up-or-down-xxx（不含 15m）
+            const is1Hour = (slug.includes('bitcoin-up-or-down') || slug.includes('ethereum-up-or-down'));
             
             if (!is15Min && !is1Hour) return false;
             
