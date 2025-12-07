@@ -467,9 +467,19 @@ export const executeArbitrage = async (
     
     const totalCost = upResult.cost + downResult.cost;
     
-    // 计算预期利润（基于事件级，使用预测值）
-    const expectedProfit = opportunity.eventAnalysis?.predictedProfit || 
-        (Math.min(upResult.filled, downResult.filled) * (1 - opportunity.combinedCost));
+    // 计算本次交易的预期利润
+    // 对于单边买入：利润来自平衡仓位后新增的"配对 shares"
+    // 对于双边买入：利润来自 minShares * (1 - combinedCost)
+    let expectedProfit = 0;
+    if (upResult.filled > 0 && downResult.filled > 0) {
+        // 双边买入：传统套利利润
+        const minFilled = Math.min(upResult.filled, downResult.filled);
+        expectedProfit = minFilled * (1 - (upResult.avgPrice + downResult.avgPrice));
+    } else if (upResult.filled > 0 || downResult.filled > 0) {
+        // 单边买入：这次交易本身没有直接套利利润
+        // 但可能改善了整体仓位平衡，显示为 0 更准确
+        expectedProfit = 0;
+    }
     
     // 记录下单时间（防止重复）
     if (upResult.success || downResult.success) {
@@ -493,3 +503,4 @@ export default {
     executeArbitrage,
     isOnCooldown,
 };
+

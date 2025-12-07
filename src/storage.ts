@@ -248,3 +248,4 @@ export default {
     closeStorage,
     getStorageStatus,
 };
+

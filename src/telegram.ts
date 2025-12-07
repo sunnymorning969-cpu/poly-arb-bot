@@ -136,19 +136,43 @@ export const notifyTradeExecuted = async (
     }
 ): Promise<void> => {
     const emoji = result.success ? '✅' : '❌';
+    
+    // 判断交易类型
+    const isBuyBoth = result.upFilled > 0 && result.downFilled > 0;
+    const isBuyUpOnly = result.upFilled > 0 && result.downFilled === 0;
+    const isBuyDownOnly = result.downFilled > 0 && result.upFilled === 0;
+    
+    let tradeType = '套利交易';
+    let tradeIcon = '⚖️';
+    if (isBuyUpOnly) {
+        tradeType = '买入 Up (平衡仓位)';
+        tradeIcon = '📈';
+    } else if (isBuyDownOnly) {
+        tradeType = '买入 Down (平衡仓位)';
+        tradeIcon = '📉';
+    }
+    
     const status = result.success ? '成功' : '失败';
     
+    // 只显示实际成交的一边
+    let detailLines = '';
+    if (result.upFilled > 0) {
+        const upPrice = result.upFilled > 0 ? (result.totalCost / result.upFilled).toFixed(3) : '0';
+        detailLines += `   • Up: ${result.upFilled.toFixed(1)} shares @ $${isBuyUpOnly ? upPrice : opportunity.upAskPrice.toFixed(3)}\n`;
+    }
+    if (result.downFilled > 0) {
+        const downPrice = result.downFilled > 0 && isBuyDownOnly ? (result.totalCost / result.downFilled).toFixed(3) : opportunity.downAskPrice.toFixed(3);
+        detailLines += `   • Down: ${result.downFilled.toFixed(1)} shares @ $${downPrice}\n`;
+    }
+    
     const message = `
-${emoji} <b>套利交易${status}！</b>
+${emoji} ${tradeIcon} <b>${tradeType}${status}</b>
 
-📊 <b>市场:</b> ${opportunity.title.slice(0, 50)}...
+📊 ${opportunity.slug.slice(0, 35)}
 
-📝 <b>执行详情:</b>
-   • Up 成交: ${result.upFilled.toFixed(2)} shares
-   • Down 成交: ${result.downFilled.toFixed(2)} shares
-   • 总成本: $${result.totalCost.toFixed(2)}
-
-💰 <b>预期利润:</b> $${result.expectedProfit.toFixed(2)}
+📝 <b>成交:</b>
+${detailLines}   • 成本: $${result.totalCost.toFixed(2)}
+${isBuyBoth ? `\n💰 <b>套利利润:</b> $${result.expectedProfit.toFixed(2)}` : ''}
 `.trim();
 
     await sendTelegramMessage(message);
@@ -401,3 +425,4 @@ export default {
     notifyPositionReport,
     notifyEventSummary,
 };
+

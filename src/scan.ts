@@ -41,3 +41,4 @@ main().catch(error => {
     Logger.error(`扫描失败: ${error}`);
     process.exit(1);
 });
+

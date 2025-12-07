@@ -65,3 +65,4 @@ SIMULATION_MODE=true
 # ========== 数据存储 ==========
 # 默认使用本地 JSON 文件存储（无需配置）
 # 数据文件位置: ./data/bot-data.json
+
