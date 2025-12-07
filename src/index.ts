@@ -9,7 +9,7 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, getCurrentPrices, getDebugInfo } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
@@ -237,15 +237,8 @@ const mainLoop = async () => {
                     if (stats.tradesExecuted >= CONFIG.MAX_DAILY_TRADES) {
                         Logger.warning('已达到每日交易限制，跳过');
                     } else {
-                        // 显示发现的机会
-                        const arbCount = selected.filter(o => o.combinedCost < 1).length;
-                        const specCount = selected.length - arbCount;
-                        Logger.arbitrage(`🎯 发现 ${arbCount} 个套利 + ${specCount} 个投机机会，下单...`);
-                        
-                        // 并行执行多个市场的套利
+                        // 并行执行
                         const tradePromises = selected.map(async (opp) => {
-                            const type = opp.combinedCost < 1 ? '套利' : '投机';
-                            Logger.info(`   📊 [${type}] ${opp.slug.slice(0, 30)} | Up:$${opp.upAskPrice.toFixed(3)} Down:$${opp.downAskPrice.toFixed(3)} | 合计:$${opp.combinedCost.toFixed(3)}`);
                             
                             stats.tradesExecuted++;
                             const result = await executeArbitrage(opp, 0);
@@ -275,9 +268,9 @@ const mainLoop = async () => {
                 }
             }
             
-            // 每5秒打印一次状态
+            // 每30秒打印一次状态（减少 I/O）
             const now = Date.now();
-            if (now - lastLogTime >= 5000) {
+            if (now - lastLogTime >= 30000) {
                 const scansPerSecond = (scansSinceLog / ((now - lastLogTime) / 1000)).toFixed(1);
                 const posStats = getPositionStats();
                 const wsStatus = getWebSocketStatus();
@@ -291,20 +284,8 @@ const mainLoop = async () => {
                 checkAndSettleExpired();
             }
             
-            // 每15秒打印一次市场价格和调试信息
-            if (now - lastPriceLog >= 15000) {
-                Logger.info(`🔍 调试: ${getDebugInfo()}`);
-                
-                const prices = getCurrentPrices();
-                if (prices.length > 0) {
-                    Logger.info('📊 当前市场价格:');
-                    for (const p of prices) {
-                        const upStr = p.upAsk !== null ? `$${p.upAsk.toFixed(3)}` : '无数据';
-                        const downStr = p.downAsk !== null ? `$${p.downAsk.toFixed(3)}` : '无数据';
-                        const combStr = p.combined !== null ? `$${p.combined.toFixed(3)}` : '-';
-                        Logger.info(`   ${p.market} | Up: ${upStr} | Down: ${downStr} | 合计: ${combStr}`);
-                    }
-                }
+            // 每2分钟打印一次市场价格（减少 I/O）
+            if (now - lastPriceLog >= 120000) {
                 lastPriceLog = now;
             }
             

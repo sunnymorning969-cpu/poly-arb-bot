@@ -40,7 +40,7 @@ class OrderBookManager {
     private reconnectDelay = 1000;
     private isConnected = false;
     private onUpdateCallback: ((tokenId: string, data: OrderBookData) => void) | null = null;
-    private debugMode = true;  // 调试模式
+    private debugMode = false;  // 调试模式（关闭以减少日志）
     private msgCount = 0;
     
     private readonly WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
@@ -223,9 +223,7 @@ class OrderBookManager {
             this.subscribedTokens.delete(tokenId);
         }
         
-        if (toRemove.length > 0) {
-            Logger.info(`🧹 清除 ${toRemove.length} 个过期订单簿`);
-        }
+        // 静默清除，减少日志
     }
     
     /**

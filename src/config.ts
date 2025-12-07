@@ -35,7 +35,7 @@ export const CONFIG = {
     MIN_ORDER_SIZE_USD: parseFloat(process.env.MIN_ORDER_SIZE_USD || '1'),      // 最小下单金额
     MAX_ORDER_SIZE_USD: parseFloat(process.env.MAX_ORDER_SIZE_USD || '15'),     // 最大下单金额（参考trader的$1-15）
     DEPTH_USAGE_PERCENT: parseFloat(process.env.DEPTH_USAGE_PERCENT || '80'),   // 使用深度的百分比
-    SCAN_INTERVAL_MS: parseInt(process.env.SCAN_INTERVAL_MS || '50'),  // 毫秒级扫描，默认50ms
+    SCAN_INTERVAL_MS: parseInt(process.env.SCAN_INTERVAL_MS || '50'),  // 毫秒级扫描
     
     // 单边价格阈值（价格低于此值时优先买入）
     UP_PRICE_THRESHOLD: parseFloat(process.env.UP_PRICE_THRESHOLD || '0.30'),   // Up价格阈值

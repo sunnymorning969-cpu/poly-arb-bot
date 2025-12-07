@@ -161,7 +161,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                         });
                     }
                     
-                    Logger.info(`   ✅ ${slug} - tokens: ${tokens.map(t => t.outcome + ':' + t.token_id.slice(0, 12)).join(', ')}`);
+                    // 调试日志已关闭
                     
                     // 计算结束时间（从 slug 计算，比 API 返回的更可靠）
                     let endDateIso = market.endDateIso || market.endDate || event.endDate;
@@ -258,7 +258,6 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
         
         // 清除旧的订单簿数据，订阅新的 token
         if (tokenIds.length > 0) {
-            Logger.info(`📡 需要订阅 ${tokenIds.length} 个 token: ${tokenIds.map(t => t.slice(0, 12)).join(', ')}`);
             orderBookManager.clearStaleOrderBooks(tokenIds);
             orderBookManager.subscribe(tokenIds);
         }
