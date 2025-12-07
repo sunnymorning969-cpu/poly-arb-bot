@@ -358,8 +358,8 @@ export const checkAndSettleExpired = (): SettlementResult[] => {
             continue;
         }
         
-        // 事件已结束（加 5 分钟缓冲，确保 API 已更新结果）
-        const bufferMs = 5 * 60 * 1000;  // 5 分钟
+        // 事件已结束（加 1 分钟缓冲，确保 API 已更新结果）
+        const bufferMs = 1 * 60 * 1000;  // 1 分钟
         if (endTime + bufferMs < now) {
             Logger.info(`⏰ 事件已结束: ${pos.slug} (结束于 ${new Date(endTime).toLocaleString()})`);
             

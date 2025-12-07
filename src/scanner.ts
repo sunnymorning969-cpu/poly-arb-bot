@@ -71,10 +71,10 @@ interface PolymarketMarket {
     closed: boolean;
 }
 
-// 市场缓存（60 秒刷新一次即可）
+// 市场缓存（30 秒刷新一次，确保 15 分钟事件能及时切换）
 let cachedMarkets: PolymarketMarket[] = [];
 let lastMarketFetch = 0;
-const MARKET_CACHE_DURATION = 60000;  // 市场列表缓存 60 秒
+const MARKET_CACHE_DURATION = 30000;  // 市场列表缓存 30 秒
 
 // 市场 token 映射（用于快速查找）
 let marketTokenMap = new Map<string, { market: PolymarketMarket; upToken: any; downToken: any }>();
@@ -349,55 +349,56 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         );
         
         // 决定交易动作
+        // 核心原则：必须保证整体平均成本 < $1.00，确保无论结果如何都是盈利
+        // 不追求随机性，追求确定性盈利
         let tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait' = 'wait';
         let priority = 0;
         
-        // 策略 1: 传统套利 - Up+Down < $1.00
-        if (combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT) {
+        // 策略 1: 新开仓 - 只有 combinedCost < $1.00 才开仓
+        if (!eventAnalysis.hasPosition && combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT) {
             tradingAction = 'buy_both';
-            priority = profitPercent * 10;  // 高优先级
+            priority = profitPercent * 10;  // 利润越高优先级越高
         }
-        // 策略 2: 仓位平衡 - 有不平衡且买入后整体仍盈利
+        // 策略 2: 已有仓位加仓 - 只有买入后整体平均成本 < $1.00 才加仓
         else if (eventAnalysis.hasPosition) {
-            // 如果需要更多 Up 且 Up 价格合理
-            if (eventAnalysis.needMoreUp && upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD) {
-                // 预测只买 Up 后的成本
-                const upOnlyPrediction = predictCostAfterBuy(
-                    market.condition_id,
-                    Math.min(upBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
-                    upBook.bestAsk,
-                    0,
-                    downBook.bestAsk
-                );
-                if (upOnlyPrediction.worthBuying) {
-                    tradingAction = 'buy_up_only';
-                    priority = 5;
-                }
-            }
-            // 如果需要更多 Down 且 Down 价格合理
-            else if (eventAnalysis.needMoreDown && downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD) {
-                const downOnlyPrediction = predictCostAfterBuy(
-                    market.condition_id,
-                    0,
-                    upBook.bestAsk,
-                    Math.min(downBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
-                    downBook.bestAsk
-                );
-                if (downOnlyPrediction.worthBuying) {
-                    tradingAction = 'buy_down_only';
-                    priority = 5;
-                }
-            }
-            // 即使 Up+Down >= $1.00，如果整体仍盈利，也可以考虑
-            else if (prediction.worthBuying && combinedCost < CONFIG.MAX_COMBINED_COST) {
+            // 双边加仓：必须保证买入后整体平均成本 < $1.00
+            if (prediction.newAvgCostPerPair < 1.0) {
                 tradingAction = 'buy_both';
-                priority = 2;
+                priority = (1.0 - prediction.newAvgCostPerPair) * 100;  // 成本越低优先级越高
             }
-        }
-        // 策略 3: 新开仓 - 即使 Up+Down 略高于 $1.00，如果价格接近也可以尝试
-        else if (!eventAnalysis.hasPosition && combinedCost < CONFIG.MAX_COMBINED_COST - 0.01) {
-            tradingAction = 'buy_both';
-            priority = 3;
+            // 单边平衡：仓位不平衡时，买入较少的一边
+            else if (Math.abs(eventAnalysis.imbalance) > 5) {
+                // 需要更多 Up
+                if (eventAnalysis.needMoreUp && upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD) {
+                    const upOnlyPrediction = predictCostAfterBuy(
+                        market.condition_id,
+                        Math.min(upBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
+                        upBook.bestAsk,
+                        0,
+                        downBook.bestAsk
+                    );
+                    // 只有买入后整体平均成本 < $1.00 才买入
+                    if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
+                        tradingAction = 'buy_up_only';
+                        priority = 5;
+                    }
+                }
+                // 需要更多 Down
+                else if (eventAnalysis.needMoreDown && downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD) {
+                    const downOnlyPrediction = predictCostAfterBuy(
+                        market.condition_id,
+                        0,
+                        upBook.bestAsk,
+                        Math.min(downBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
+                        downBook.bestAsk
+                    );
+                    // 只有买入后整体平均成本 < $1.00 才买入
+                    if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
+                        tradingAction = 'buy_down_only';
+                        priority = 5;
+                    }
+                }
+            }
         }
         
         // 只添加有动作的机会

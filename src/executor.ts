@@ -394,18 +394,30 @@ export const executeArbitrage = async (
     let upOrderSize = 0;
     let downOrderSize = 0;
     
-    if (action === 'buy_both' || action === 'buy_up_only') {
+    if (action === 'buy_both') {
+        // 两边都买时，取两边中较小的金额，确保平衡买入
+        const maxUpSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
+        const maxDownSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
+        
+        // 如果任一边深度不足，跳过整个交易
+        if (maxUpSize === 0 || maxDownSize === 0) {
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
+        
+        // 取两边较小值，确保平衡
+        const balancedSize = Math.min(maxUpSize, maxDownSize);
+        upOrderSize = balancedSize;
+        downOrderSize = balancedSize;
+    } else if (action === 'buy_up_only') {
         upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
-    }
-    if (action === 'buy_both' || action === 'buy_down_only') {
+        if (upOrderSize === 0) {
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
+    } else if (action === 'buy_down_only') {
         downOrderSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
-    }
-    
-    // 如果需要买但深度不够，跳过
-    if ((action === 'buy_both' && upOrderSize === 0 && downOrderSize === 0) ||
-        (action === 'buy_up_only' && upOrderSize === 0) ||
-        (action === 'buy_down_only' && downOrderSize === 0)) {
-        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        if (downOrderSize === 0) {
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
     }
     
     // 检查余额

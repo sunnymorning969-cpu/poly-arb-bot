@@ -290,20 +290,23 @@ const mainLoop = async () => {
                 Logger.info(`⚡ ${scansPerSecond}/s | WS: ${wsStatus.connected ? '🟢' : '🔴'} ${wsStatus.cachedOrderBooks} books | 仓位: ${posStats.totalPositions} | 已结算: ${overallStats.totalSettled} | 总盈亏: $${overallStats.totalProfit.toFixed(2)}`);
                 lastLogTime = now;
                 scansSinceLog = 0;
-                
-                // 检查并结算已到期仓位
-                checkAndSettleExpired();
             }
             
-            // 每2分钟打印一次市场价格（减少 I/O）
-            if (now - lastPriceLog >= 120000) {
+            // 每15秒检查并结算已到期仓位（提高频率）
+            if (now - lastPriceLog >= 15000) {
+                checkAndSettleExpired();
                 lastPriceLog = now;
             }
             
             // 每2分钟发送一次持仓汇报到 Telegram
             if (now - lastPositionReport >= 2 * 60 * 1000) {
+                // 先检查结算，确保不发送已结算的仓位
+                checkAndSettleExpired();
                 const allPositions = getAllPositions();
-                await notifyPositionReport(allPositions);
+                // 只有还有活跃仓位时才发送汇报
+                if (allPositions.length > 0) {
+                    await notifyPositionReport(allPositions);
+                }
                 lastPositionReport = now;
             }
             
