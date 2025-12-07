@@ -424,20 +424,40 @@ export const executeArbitrage = async (
     let downOrderSize = 0;
     
     if (action === 'buy_both') {
-        // 两边都买时，取两边中较小的金额，确保平衡买入
-        const maxUpSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
-        const maxDownSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
+        // 两边都买时，确保买到的 SHARES 数量相近（而不是金额相近）
+        // 这样才能真正实现套利配对
         
-        // 如果任一边深度不足，跳过整个交易
-        if (maxUpSize === 0 || maxDownSize === 0) {
+        // 计算每边能买到的最大 shares（基于深度）
+        const maxUpShares = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
+        const maxDownShares = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
+        
+        // 如果任一边深度不足，跳过
+        if (maxUpShares < 1 || maxDownShares < 1) {
             Logger.warning(`❌ ${crossTag} 深度不足: Up=${opportunity.upAskSize.toFixed(0)} Down=${opportunity.downAskSize.toFixed(0)}`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
         
-        // 取两边较小值，确保平衡
-        const balancedSize = Math.min(maxUpSize, maxDownSize);
-        upOrderSize = balancedSize;
-        downOrderSize = balancedSize;
+        // 取两边能买到的 shares 的最小值，确保配对平衡
+        const targetShares = Math.min(maxUpShares, maxDownShares);
+        
+        // 计算需要多少钱（USD）来买这些 shares
+        const upCostNeeded = targetShares * opportunity.upAskPrice;
+        const downCostNeeded = targetShares * opportunity.downAskPrice;
+        const totalCostNeeded = upCostNeeded + downCostNeeded;
+        
+        // 检查是否超过最大订单限制
+        if (totalCostNeeded > CONFIG.MAX_ORDER_SIZE_USD * 2) {
+            // 按比例缩小到限制内
+            const scale = (CONFIG.MAX_ORDER_SIZE_USD * 2) / totalCostNeeded;
+            upOrderSize = upCostNeeded * scale;
+            downOrderSize = downCostNeeded * scale;
+        } else if (totalCostNeeded < CONFIG.MIN_ORDER_SIZE_USD * 2) {
+            // 太小，跳过
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        } else {
+            upOrderSize = upCostNeeded;
+            downOrderSize = downCostNeeded;
+        }
     } else if (action === 'buy_up_only') {
         upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
         if (upOrderSize === 0) {
