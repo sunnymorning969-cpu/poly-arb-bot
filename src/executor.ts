@@ -21,7 +21,6 @@ let wallet: ethers.Wallet | null = null;
 
 // 记录上次下单时间（同一市场必须冷却）
 const lastTradeTime = new Map<string, number>();
-const TRADE_COOLDOWN_MS = 60000;  // 同一市场 60 秒冷却
 
 // Polygon 合约地址
 const CONTRACTS = {
@@ -343,14 +342,13 @@ const executeBuy = async (
 };
 
 /**
- * 检查是否在冷却中（同一市场 60 秒内不重复下单）
+ * 检查是否在冷却中（同一市场在冷却时间内不重复下单）
  */
 export const isDuplicateOpportunity = (conditionId: string, _upPrice: number, _downPrice: number): boolean => {
     const lastTime = lastTradeTime.get(conditionId);
     if (!lastTime) return false;
     
-    // 60 秒冷却
-    return Date.now() - lastTime < TRADE_COOLDOWN_MS;
+    return Date.now() - lastTime < CONFIG.TRADE_COOLDOWN_MS;
 };
 
 /**
@@ -364,11 +362,16 @@ export const recordTradePrice = (conditionId: string, _upPrice: number, _downPri
 export const isOnCooldown = (_conditionId: string): boolean => false;
 
 /**
- * 智能套利执行 - 根据深度和仓位动态下单
+ * 智能套利执行 - 事件级套利策略
+ * 
+ * 根据 tradingAction 决定：
+ * - buy_both: 两边都买（传统套利或仓位构建）
+ * - buy_up_only: 只买 Up（仓位平衡）
+ * - buy_down_only: 只买 Down（仓位平衡）
  */
 export const executeArbitrage = async (
     opportunity: ArbitrageOpportunity,
-    _amountUSD: number  // 这个参数现在不用了，改为根据深度决定
+    _amountUSD: number
 ): Promise<{
     success: boolean;
     upFilled: number;
@@ -376,59 +379,57 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
-    // 检查是否重复机会（同一价格不重复下单）
+    // 检查冷却（同一市场 60 秒内不重复）
     if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
     
-    // 检查仓位不平衡度
-    const imbalance = getImbalance(opportunity.conditionId);
+    // 获取交易动作
+    const action = opportunity.tradingAction;
+    if (action === 'wait') {
+        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    }
     
     // 根据深度计算下单金额
-    const upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
-    const downOrderSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
+    let upOrderSize = 0;
+    let downOrderSize = 0;
     
-    // 如果两边深度都不够，跳过
-    if (upOrderSize === 0 && downOrderSize === 0) {
-        Logger.warning('深度不足，跳过');
+    if (action === 'buy_both' || action === 'buy_up_only') {
+        upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
+    }
+    if (action === 'buy_both' || action === 'buy_down_only') {
+        downOrderSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
+    }
+    
+    // 如果需要买但深度不够，跳过
+    if ((action === 'buy_both' && upOrderSize === 0 && downOrderSize === 0) ||
+        (action === 'buy_up_only' && upOrderSize === 0) ||
+        (action === 'buy_down_only' && downOrderSize === 0)) {
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
     
     // 检查余额
     const balance = await getBalance();
     const totalNeeded = upOrderSize + downOrderSize;
-    if (balance < Math.min(upOrderSize, downOrderSize)) {
-        Logger.error(`余额不足: $${balance.toFixed(2)}`);
+    if (balance < totalNeeded) {
+        Logger.error(`余额不足: $${balance.toFixed(2)} < $${totalNeeded.toFixed(2)}`);
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
     
     let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     let downResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     
-    // 只做真套利（Up + Down < $1.00）
-    const hasRealArbitrage = opportunity.combinedCost < 1.0;
-    
-    if (!hasRealArbitrage) {
-        // 没有套利空间，跳过
-        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
-    }
-    
-    // 真套利：买两边
-    const shouldBuyUp = upOrderSize > 0;
-    const shouldBuyDown = downOrderSize > 0;
-    const strategyType = 'arbitrage';
-    
     // 并行执行下单
     const promises: Promise<any>[] = [];
     
-    if (shouldBuyUp) {
+    if (upOrderSize > 0) {
         promises.push(
             executeBuy(opportunity.upToken.token_id, upOrderSize, opportunity.upAskPrice, 'Up')
                 .then(r => { upResult = r; })
         );
     }
     
-    if (shouldBuyDown) {
+    if (downOrderSize > 0) {
         promises.push(
             executeBuy(opportunity.downToken.token_id, downOrderSize, opportunity.downAskPrice, 'Down')
                 .then(r => { downResult = r; })
@@ -466,22 +467,11 @@ export const executeArbitrage = async (
     
     const totalCost = upResult.cost + downResult.cost;
     
-    // 计算预期利润
-    let expectedProfit = 0;
-    if (strategyType === 'arbitrage') {
-        // 套利：利润 = 最小成交量 * (1 - 合计价格)
-        const minShares = Math.min(upResult.filled, downResult.filled);
-        expectedProfit = minShares * (1 - opportunity.combinedCost);
-    } else {
-        // 投机：利润取决于结果
-        if (upResult.success && !downResult.success) {
-            expectedProfit = upResult.filled * (1 - opportunity.upAskPrice) - upResult.cost;
-        } else if (downResult.success && !upResult.success) {
-            expectedProfit = downResult.filled * (1 - opportunity.downAskPrice) - downResult.cost;
-        }
-    }
+    // 计算预期利润（基于事件级，使用预测值）
+    const expectedProfit = opportunity.eventAnalysis?.predictedProfit || 
+        (Math.min(upResult.filled, downResult.filled) * (1 - opportunity.combinedCost));
     
-    // 记录下单价格（防止重复下单）
+    // 记录下单时间（防止重复）
     if (upResult.success || downResult.success) {
         recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
     }

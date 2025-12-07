@@ -11,6 +11,7 @@ import axios from 'axios';
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
+import { getEventCostAnalysis, predictCostAfterBuy } from './positions';
 
 // 市场数据接口
 export interface MarketToken {
@@ -39,6 +40,20 @@ export interface ArbitrageOpportunity {
     upIsCheap: boolean;
     downIsCheap: boolean;
     priority: number;
+    // 事件级策略（新增）
+    eventAnalysis: {
+        hasPosition: boolean;
+        currentAvgCost: number;     // 当前平均成本
+        currentProfit: number;      // 当前预期利润
+        imbalance: number;          // 不平衡度
+        needMoreUp: boolean;        // 需要更多 Up
+        needMoreDown: boolean;      // 需要更多 Down
+        predictedAvgCost: number;   // 买入后预测的平均成本
+        predictedProfit: number;    // 买入后预测的利润
+        worthBuying: boolean;       // 是否值得买入
+    };
+    // 交易建议
+    tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait';
 }
 
 // API 响应接口
@@ -288,7 +303,13 @@ export const initWebSocket = async (): Promise<void> => {
 };
 
 /**
- * 扫描套利机会（从 WebSocket 缓存读取，无 API 请求）
+ * 扫描套利机会（事件级套利策略）
+ * 
+ * 新策略：
+ * 1. 不只看单笔 Up+Down < $1.00
+ * 2. 考虑当前仓位的平均成本
+ * 3. 考虑仓位不平衡度
+ * 4. 即使 Up+Down >= $1.00，如果能改善整体仓位也值得交易
  */
 export const scanArbitrageOpportunities = async (silent: boolean = false): Promise<ArbitrageOpportunity[]> => {
     // 检查是否需要刷新市场列表
@@ -297,33 +318,92 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         await fetchCryptoMarkets();
     }
     
-    // 检查 WebSocket 是否有新鲜数据（避免启动时用旧数据误判）
+    // 检查 WebSocket 是否有新鲜数据
     if (!orderBookManager.hasFreshData()) {
         return [];
     }
     
     const opportunities: ArbitrageOpportunity[] = [];
     
-    // 遍历所有市场，从 WebSocket 缓存获取订单簿
+    // 遍历所有市场
     for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
         const upBook = orderBookManager.getOrderBook(upToken.token_id);
         const downBook = orderBookManager.getOrderBook(downToken.token_id);
         
-        // 跳过没有订单簿数据的市场
         if (!upBook || !downBook) continue;
         
-        // 计算套利空间
         const combinedCost = upBook.bestAsk + downBook.bestAsk;
         const profitPercent = (1 - combinedCost) * 100;
+        const maxShares = Math.min(upBook.bestAskSize, downBook.bestAskSize);
         
-        // 只做真套利：Up + Down < $1.00
-        const hasArbitrage = combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT;
+        // 获取当前仓位分析
+        const eventAnalysis = getEventCostAnalysis(market.condition_id);
         
-        if (hasArbitrage) {
-            const maxShares = Math.min(upBook.bestAskSize, downBook.bestAskSize);
-            const priority = profitPercent;
-            const upIsCheap = false;
-            const downIsCheap = false;
+        // 预测买入后的成本（假设两边各买 maxShares）
+        const prediction = predictCostAfterBuy(
+            market.condition_id,
+            maxShares,
+            upBook.bestAsk,
+            maxShares,
+            downBook.bestAsk
+        );
+        
+        // 决定交易动作
+        let tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait' = 'wait';
+        let priority = 0;
+        
+        // 策略 1: 传统套利 - Up+Down < $1.00
+        if (combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT) {
+            tradingAction = 'buy_both';
+            priority = profitPercent * 10;  // 高优先级
+        }
+        // 策略 2: 仓位平衡 - 有不平衡且买入后整体仍盈利
+        else if (eventAnalysis.hasPosition) {
+            // 如果需要更多 Up 且 Up 价格合理
+            if (eventAnalysis.needMoreUp && upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD) {
+                // 预测只买 Up 后的成本
+                const upOnlyPrediction = predictCostAfterBuy(
+                    market.condition_id,
+                    Math.min(upBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
+                    upBook.bestAsk,
+                    0,
+                    downBook.bestAsk
+                );
+                if (upOnlyPrediction.worthBuying) {
+                    tradingAction = 'buy_up_only';
+                    priority = 5;
+                }
+            }
+            // 如果需要更多 Down 且 Down 价格合理
+            else if (eventAnalysis.needMoreDown && downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD) {
+                const downOnlyPrediction = predictCostAfterBuy(
+                    market.condition_id,
+                    0,
+                    upBook.bestAsk,
+                    Math.min(downBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
+                    downBook.bestAsk
+                );
+                if (downOnlyPrediction.worthBuying) {
+                    tradingAction = 'buy_down_only';
+                    priority = 5;
+                }
+            }
+            // 即使 Up+Down >= $1.00，如果整体仍盈利，也可以考虑
+            else if (prediction.worthBuying && combinedCost < CONFIG.MAX_COMBINED_COST) {
+                tradingAction = 'buy_both';
+                priority = 2;
+            }
+        }
+        // 策略 3: 新开仓 - 即使 Up+Down 略高于 $1.00，如果价格接近也可以尝试
+        else if (!eventAnalysis.hasPosition && combinedCost < CONFIG.MAX_COMBINED_COST - 0.01) {
+            tradingAction = 'buy_both';
+            priority = 3;
+        }
+        
+        // 只添加有动作的机会
+        if (tradingAction !== 'wait') {
+            const upIsCheap = upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD;
+            const downIsCheap = downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD;
             
             opportunities.push({
                 conditionId: market.condition_id,
@@ -350,6 +430,18 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
                 upIsCheap,
                 downIsCheap,
                 priority,
+                eventAnalysis: {
+                    hasPosition: eventAnalysis.hasPosition,
+                    currentAvgCost: eventAnalysis.avgCostPerPair,
+                    currentProfit: eventAnalysis.currentProfit,
+                    imbalance: eventAnalysis.imbalance,
+                    needMoreUp: eventAnalysis.needMoreUp,
+                    needMoreDown: eventAnalysis.needMoreDown,
+                    predictedAvgCost: prediction.newAvgCostPerPair,
+                    predictedProfit: prediction.newProfit,
+                    worthBuying: prediction.worthBuying,
+                },
+                tradingAction,
             });
         }
     }

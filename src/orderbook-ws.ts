@@ -143,26 +143,41 @@ class OrderBookManager {
         asks: Array<{ price: string; size: string }>,
         bids: Array<{ price: string; size: string }>
     ): void {
-        let bestAsk = Infinity;
-        let bestAskSize = 0;
-        let bestBid = 0;
-        let bestBidSize = 0;
+        // 按价格聚合订单（同价位的 size 加总）
+        const asksByPrice = new Map<number, number>();
+        const bidsByPrice = new Map<number, number>();
         
-        // 找最低卖价
+        // 聚合所有 ask 订单
         for (const ask of asks) {
             const price = parseFloat(ask.price);
+            const size = parseFloat(ask.size);
+            asksByPrice.set(price, (asksByPrice.get(price) || 0) + size);
+        }
+        
+        // 聚合所有 bid 订单
+        for (const bid of bids) {
+            const price = parseFloat(bid.price);
+            const size = parseFloat(bid.size);
+            bidsByPrice.set(price, (bidsByPrice.get(price) || 0) + size);
+        }
+        
+        // 找最低卖价及其总量
+        let bestAsk = Infinity;
+        let bestAskSize = 0;
+        for (const [price, size] of asksByPrice) {
             if (price < bestAsk) {
                 bestAsk = price;
-                bestAskSize = parseFloat(ask.size);
+                bestAskSize = size;
             }
         }
         
-        // 找最高买价
-        for (const bid of bids) {
-            const price = parseFloat(bid.price);
+        // 找最高买价及其总量
+        let bestBid = 0;
+        let bestBidSize = 0;
+        for (const [price, size] of bidsByPrice) {
             if (price > bestBid) {
                 bestBid = price;
-                bestBidSize = parseFloat(bid.size);
+                bestBidSize = size;
             }
         }
         

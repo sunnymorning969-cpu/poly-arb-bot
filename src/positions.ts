@@ -137,6 +137,111 @@ export const getImbalance = (conditionId: string): {
 };
 
 /**
+ * 获取事件的平均成本分析（事件级套利的核心）
+ */
+export const getEventCostAnalysis = (conditionId: string): {
+    hasPosition: boolean;
+    upShares: number;
+    downShares: number;
+    upCost: number;
+    downCost: number;
+    totalCost: number;
+    minShares: number;           // 较少的一边
+    avgCostPerPair: number;      // 每对 Up+Down 的平均成本
+    currentProfit: number;       // 如果现在结算的预期利润
+    profitPercent: number;       // 利润率
+    imbalance: number;           // 不平衡度 (Up - Down)
+    needMoreUp: boolean;         // 是否需要更多 Up
+    needMoreDown: boolean;       // 是否需要更多 Down
+} => {
+    const pos = positions.get(conditionId);
+    
+    if (!pos || (pos.upShares === 0 && pos.downShares === 0)) {
+        return {
+            hasPosition: false,
+            upShares: 0,
+            downShares: 0,
+            upCost: 0,
+            downCost: 0,
+            totalCost: 0,
+            minShares: 0,
+            avgCostPerPair: 0,
+            currentProfit: 0,
+            profitPercent: 0,
+            imbalance: 0,
+            needMoreUp: true,
+            needMoreDown: true,
+        };
+    }
+    
+    const totalCost = pos.upCost + pos.downCost;
+    const minShares = Math.min(pos.upShares, pos.downShares);
+    const avgCostPerPair = minShares > 0 ? totalCost / minShares : 0;
+    const currentProfit = minShares - totalCost;  // minShares * $1 - totalCost
+    const profitPercent = totalCost > 0 ? (currentProfit / totalCost) * 100 : 0;
+    const imbalance = pos.upShares - pos.downShares;
+    
+    return {
+        hasPosition: true,
+        upShares: pos.upShares,
+        downShares: pos.downShares,
+        upCost: pos.upCost,
+        downCost: pos.downCost,
+        totalCost,
+        minShares,
+        avgCostPerPair,
+        currentProfit,
+        profitPercent,
+        imbalance,
+        needMoreUp: imbalance < 0,      // Down 多，需要 Up
+        needMoreDown: imbalance > 0,    // Up 多，需要 Down
+    };
+};
+
+/**
+ * 预测买入后的成本分析
+ * 用于决定是否值得买入
+ */
+export const predictCostAfterBuy = (
+    conditionId: string,
+    buyUp: number,      // 要买的 Up shares
+    upPrice: number,    // Up 价格
+    buyDown: number,    // 要买的 Down shares
+    downPrice: number,  // Down 价格
+): {
+    newAvgCostPerPair: number;  // 买入后每对平均成本
+    newMinShares: number;       // 买入后较少的一边
+    newProfit: number;          // 买入后的预期利润
+    newProfitPercent: number;   // 买入后的利润率
+    worthBuying: boolean;       // 是否值得买入
+} => {
+    const current = getEventCostAnalysis(conditionId);
+    
+    const newUpShares = current.upShares + buyUp;
+    const newDownShares = current.downShares + buyDown;
+    const newUpCost = current.upCost + (buyUp * upPrice);
+    const newDownCost = current.downCost + (buyDown * downPrice);
+    const newTotalCost = newUpCost + newDownCost;
+    const newMinShares = Math.min(newUpShares, newDownShares);
+    const newAvgCostPerPair = newMinShares > 0 ? newTotalCost / newMinShares : 0;
+    const newProfit = newMinShares - newTotalCost;
+    const newProfitPercent = newTotalCost > 0 ? (newProfit / newTotalCost) * 100 : 0;
+    
+    // 值得买入的条件：
+    // 1. 平均成本 < $1.00（确保盈利）
+    // 2. 或者能改善不平衡度
+    const worthBuying = newAvgCostPerPair < 1.0 || newProfit > current.currentProfit;
+    
+    return {
+        newAvgCostPerPair,
+        newMinShares,
+        newProfit,
+        newProfitPercent,
+        worthBuying,
+    };
+};
+
+/**
  * 获取所有活跃仓位
  */
 export const getAllPositions = (): Position[] => {

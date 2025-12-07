@@ -21,6 +21,14 @@ interface ConfigItem {
     validate?: (value: string) => boolean;
 }
 
+// ========== 基于交易员数据分析的默认配置 ==========
+// 分析样本: 4个完整事件
+// - BTC 15分钟 (321笔): Up $0.08-$0.29, Down $0.69-$0.90, 金额 $0.13-$13.92
+// - BTC 1小时 (1990笔): Up $0.08-$0.24, Down $0.75-$0.89, 金额 $0.52-$10.32
+// - ETH 15分钟 (160笔): Up $0.24-$0.53, Down $0.44-$0.76, 金额 $0.54-$9.12
+// - ETH 1小时 (2520笔): Up $0.37-$0.53, Down $0.33-$0.64, 金额 $0.07-$5.12
+// 交易间隔: 约2秒一笔
+
 const CONFIG_ITEMS: ConfigItem[] = [
     // 钱包配置
     {
@@ -66,76 +74,88 @@ const CONFIG_ITEMS: ConfigItem[] = [
         default: 'true',
     },
     
-    // 套利配置
+    // 事件级套利配置（基于交易员分析）
     {
         key: 'MIN_ARBITRAGE_PERCENT',
-        description: '最小套利空间 % (低于此值不执行)',
+        description: '最小利润 % (交易员几乎所有>0%的都做)',
         required: false,
-        default: '0.5',
+        default: '0.1',  // 基于分析：交易员非常激进
+    },
+    {
+        key: 'MAX_COMBINED_COST',
+        description: '最大 Up+Down 合计成本 (分析显示部分>$1)',
+        required: false,
+        default: '1.05',  // 基于分析：允许略亏来平衡仓位
     },
     {
         key: 'MIN_ORDER_SIZE_USD',
-        description: '最小单笔下单金额 ($)',
+        description: '最小下单金额 $ (分析显示有$0.13小单)',
         required: false,
-        default: '1',
+        default: '0.5',  // 基于分析：最小$0.13，设置$0.5安全
     },
     {
         key: 'MAX_ORDER_SIZE_USD',
-        description: '最大单笔下单金额 ($)',
+        description: '最大下单金额 $ (分析显示最大约$14)',
         required: false,
-        default: '15',
+        default: '14',  // 基于分析：最大$13.92
     },
     {
         key: 'DEPTH_USAGE_PERCENT',
-        description: '深度使用比例 % (使用订单簿深度的百分比)',
+        description: '深度使用比例 % (交易员吃单激进)',
         required: false,
-        default: '80',
+        default: '90',  // 基于分析：交易员吃单非常激进
     },
     
-    // 单边阈值
+    // 单边买入阈值（基于分析：Up $0.08-$0.53, Down $0.33-$0.90）
     {
         key: 'UP_PRICE_THRESHOLD',
-        description: 'Up 价格阈值 (低于此价格优先买入)',
+        description: 'Up 单边买入阈值 (分析: Up价格$0.08-$0.53)',
         required: false,
-        default: '0.30',
+        default: '0.55',  // 基于分析：Up最高到$0.53
     },
     {
         key: 'DOWN_PRICE_THRESHOLD',
-        description: 'Down 价格阈值 (低于此价格优先买入)',
+        description: 'Down 单边买入阈值 (分析: Down价格$0.33-$0.90)',
         required: false,
-        default: '0.70',
+        default: '0.55',  // 对称设置，配合Up使用
     },
     
-    // 并行配置
+    // 冷却与频率控制（分析显示交易间隔约2秒）
+    {
+        key: 'TRADE_COOLDOWN_MS',
+        description: '冷却时间 ms (分析: 交易员约2秒一笔)',
+        required: false,
+        default: '5000',  // 比交易员略保守，5秒
+    },
     {
         key: 'MAX_PARALLEL_TRADES',
-        description: '最多同时在几个市场下单',
+        description: '最大并行交易数 (4市场×2边)',
         required: false,
-        default: '5',
+        default: '8',
     },
     {
         key: 'SCAN_INTERVAL_MS',
         description: '扫描间隔 (毫秒)',
         required: false,
-        default: '10',
+        default: '50',
     },
     
-    // 安全配置
+    // 安全配置（15分钟300+笔，1小时2000+笔）
     {
         key: 'MAX_DAILY_TRADES',
-        description: '每日最大交易次数',
+        description: '每日最大交易数 (分析: 1小时约2000笔)',
+        required: false,
+        default: '3000',
+    },
+    {
+        key: 'MAX_DAILY_LOSS_USD',
+        description: '每日最大亏损 $',
         required: false,
         default: '100',
     },
     {
-        key: 'MAX_DAILY_LOSS_USD',
-        description: '每日最大亏损 ($，达到后停止)',
-        required: false,
-        default: '50',
-    },
-    {
         key: 'SIMULATION_MODE',
-        description: '模拟模式 (true=不真实下单，用于测试)',
+        description: '模拟模式 (true=不真实下单)',
         required: false,
         default: 'true',
     },
@@ -200,7 +220,7 @@ const loadExistingConfig = (): Record<string, string> => {
 // 保存配置
 const saveConfig = (config: Record<string, string>): void => {
     const lines: string[] = [
-        '# Polymarket 套利机器人配置',
+        '# Polymarket 套利机器人配置 (基于交易员数据分析)',
         '# 由 setup 脚本生成',
         `# 生成时间: ${new Date().toLocaleString('zh-CN')}`,
         '',
@@ -217,23 +237,27 @@ const saveConfig = (config: Record<string, string>): void => {
         `TELEGRAM_GROUP_ID=${config.TELEGRAM_GROUP_ID || ''}`,
         `TELEGRAM_ENABLED=${config.TELEGRAM_ENABLED || 'true'}`,
         '',
-        '# ========== 套利配置 ==========',
-        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '0.5'}`,
-        `MIN_ORDER_SIZE_USD=${config.MIN_ORDER_SIZE_USD || '1'}`,
-        `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '15'}`,
-        `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '80'}`,
-        `SCAN_INTERVAL_MS=${config.SCAN_INTERVAL_MS || '10'}`,
+        '# ========== 事件级套利配置（基于交易员分析）==========',
+        '# 分析样本: BTC/ETH 15分钟(321/160笔) + BTC/ETH 1小时(1990/2520笔)',
+        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '0.1'}`,
+        `MAX_COMBINED_COST=${config.MAX_COMBINED_COST || '1.05'}`,
+        `MIN_ORDER_SIZE_USD=${config.MIN_ORDER_SIZE_USD || '0.5'}`,
+        `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
+        `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '90'}`,
         '',
-        '# ========== 单边价格阈值 ==========',
-        `UP_PRICE_THRESHOLD=${config.UP_PRICE_THRESHOLD || '0.30'}`,
-        `DOWN_PRICE_THRESHOLD=${config.DOWN_PRICE_THRESHOLD || '0.70'}`,
+        '# ========== 单边买入阈值（基于价格分析）==========',
+        '# Up价格范围: $0.08-$0.53, Down价格范围: $0.33-$0.90',
+        `UP_PRICE_THRESHOLD=${config.UP_PRICE_THRESHOLD || '0.55'}`,
+        `DOWN_PRICE_THRESHOLD=${config.DOWN_PRICE_THRESHOLD || '0.55'}`,
         '',
-        '# ========== 并行下单 ==========',
-        `MAX_PARALLEL_TRADES=${config.MAX_PARALLEL_TRADES || '5'}`,
+        '# ========== 频率与冷却控制（分析:交易间隔约2秒）==========',
+        `TRADE_COOLDOWN_MS=${config.TRADE_COOLDOWN_MS || '5000'}`,
+        `SCAN_INTERVAL_MS=${config.SCAN_INTERVAL_MS || '50'}`,
+        `MAX_PARALLEL_TRADES=${config.MAX_PARALLEL_TRADES || '8'}`,
         '',
-        '# ========== 安全配置 ==========',
-        `MAX_DAILY_TRADES=${config.MAX_DAILY_TRADES || '100'}`,
-        `MAX_DAILY_LOSS_USD=${config.MAX_DAILY_LOSS_USD || '50'}`,
+        '# ========== 安全配置（分析:1小时约2000笔）==========',
+        `MAX_DAILY_TRADES=${config.MAX_DAILY_TRADES || '3000'}`,
+        `MAX_DAILY_LOSS_USD=${config.MAX_DAILY_LOSS_USD || '100'}`,
         `SIMULATION_MODE=${config.SIMULATION_MODE || 'true'}`,
         '',
     ];

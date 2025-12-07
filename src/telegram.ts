@@ -262,6 +262,134 @@ ${profitEmoji} <b>总盈亏: ${isProfit ? '+' : ''}$${stats.totalProfit.toFixed(
     await sendTelegramMessage(message);
 };
 
+/**
+ * 发送持仓汇报（每2分钟）
+ * 显示各事件的总持仓情况和预期盈亏
+ */
+export const notifyPositionReport = async (positions: Array<{
+    slug: string;
+    title: string;
+    upShares: number;
+    downShares: number;
+    upCost: number;
+    downCost: number;
+    endDate: string;
+}>): Promise<void> => {
+    if (positions.length === 0) {
+        const message = `
+📋 <b>持仓汇报</b> (${new Date().toLocaleTimeString('zh-CN')})
+
+暂无活跃仓位
+`.trim();
+        await sendTelegramMessage(message);
+        return;
+    }
+    
+    // 计算总体统计
+    let totalUpShares = 0;
+    let totalDownShares = 0;
+    let totalCost = 0;
+    
+    const positionLines: string[] = [];
+    
+    for (const pos of positions) {
+        const cost = pos.upCost + pos.downCost;
+        const minShares = Math.min(pos.upShares, pos.downShares);
+        const expectedProfit = minShares - cost;
+        const profitPercent = cost > 0 ? (expectedProfit / cost) * 100 : 0;
+        const imbalance = pos.upShares - pos.downShares;
+        
+        totalUpShares += pos.upShares;
+        totalDownShares += pos.downShares;
+        totalCost += cost;
+        
+        // 格式化结束时间
+        const endTime = new Date(pos.endDate);
+        const timeStr = endTime.toLocaleTimeString('zh-CN', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            timeZone: 'Asia/Shanghai'
+        });
+        
+        // 简短显示每个仓位
+        const profitEmoji = expectedProfit >= 0 ? '✅' : '❌';
+        const balanceIcon = Math.abs(imbalance) < 1 ? '⚖️' : (imbalance > 0 ? '⬆️' : '⬇️');
+        
+        positionLines.push(
+            `${balanceIcon} <b>${pos.slug.slice(0, 25)}</b>\n` +
+            `   U:${pos.upShares.toFixed(1)} D:${pos.downShares.toFixed(1)} | 成本:$${cost.toFixed(2)} | ${profitEmoji}$${expectedProfit.toFixed(2)} (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(1)}%) | 截止:${timeStr}`
+        );
+    }
+    
+    // 计算总预期利润
+    const totalMinShares = Math.min(totalUpShares, totalDownShares);
+    const totalExpectedProfit = totalMinShares - totalCost;
+    const totalProfitPercent = totalCost > 0 ? (totalExpectedProfit / totalCost) * 100 : 0;
+    const totalProfitEmoji = totalExpectedProfit >= 0 ? '📈' : '📉';
+    
+    const message = `
+📋 <b>持仓汇报</b> (${new Date().toLocaleTimeString('zh-CN')})
+
+${positionLines.join('\n\n')}
+
+━━━━━━━━━━━━━━━
+<b>📊 汇总:</b>
+   • 活跃仓位: ${positions.length} 个
+   • 总 Up: ${totalUpShares.toFixed(1)} | 总 Down: ${totalDownShares.toFixed(1)}
+   • 总成本: $${totalCost.toFixed(2)}
+   • ${totalProfitEmoji} <b>预期盈亏: ${totalExpectedProfit >= 0 ? '+' : ''}$${totalExpectedProfit.toFixed(2)} (${totalProfitPercent >= 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%)</b>
+
+${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : ''}
+`.trim();
+
+    await sendTelegramMessage(message);
+};
+
+/**
+ * 发送事件结束总结
+ */
+export const notifyEventSummary = async (
+    eventName: string,
+    result: {
+        outcome: 'up' | 'down';
+        profit: number;
+        profitPercent: number;
+        totalCost: number;
+        payout: number;
+    },
+    overallStats: {
+        totalSettled: number;
+        totalProfit: number;
+        winCount: number;
+        lossCount: number;
+        winRate: number;
+    }
+): Promise<void> => {
+    const outcomeEmoji = result.outcome === 'up' ? '⬆️' : '⬇️';
+    const profitEmoji = result.profit >= 0 ? '🎉' : '😢';
+    const overallProfitEmoji = overallStats.totalProfit >= 0 ? '📈' : '📉';
+    
+    const message = `
+${profitEmoji} <b>事件结束总结</b>
+
+📊 <b>事件:</b> ${eventName.slice(0, 50)}...
+🎲 <b>结果:</b> ${outcomeEmoji} ${result.outcome.toUpperCase()} 获胜
+
+💰 <b>本次盈亏:</b>
+   • 成本: $${result.totalCost.toFixed(2)}
+   • 收回: $${result.payout.toFixed(2)}
+   • 盈亏: ${result.profit >= 0 ? '+' : ''}$${result.profit.toFixed(2)} (${result.profitPercent >= 0 ? '+' : ''}${result.profitPercent.toFixed(1)}%)
+
+━━━━━━━━━━━━━━━
+📊 <b>累计统计:</b>
+   • 已结算: ${overallStats.totalSettled} 个事件
+   • 胜率: ${overallStats.winRate.toFixed(1)}% (${overallStats.winCount}胜/${overallStats.lossCount}负)
+   • ${overallProfitEmoji} <b>累计盈亏: ${overallStats.totalProfit >= 0 ? '+' : ''}$${overallStats.totalProfit.toFixed(2)}</b>
+`.trim();
+
+    await sendTelegramMessage(message, true);  // 高优先级
+};
+
 export default {
     sendTelegramMessage,
     notifyArbitrageFound,
@@ -270,4 +398,6 @@ export default {
     notifyDailyStats,
     notifySettlement,
     notifyOverallStats,
+    notifyPositionReport,
+    notifyEventSummary,
 };

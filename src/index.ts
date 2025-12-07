@@ -11,8 +11,8 @@ import CONFIG from './config';
 import Logger from './logger';
 import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
-import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
-import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
+import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats, notifyPositionReport, notifyEventSummary } from './telegram';
+import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
 
 // 统计数据
@@ -100,7 +100,9 @@ const printStats = () => {
 };
 
 /**
- * 选择多个套利机会（并行下单）
+ * 选择套利机会（事件级策略）
+ * 
+ * 简化版：scanner 已经做了机会判断，这里只做冷却检查
  */
 const selectOpportunities = (
     opportunities: ArbitrageOpportunity[]
@@ -109,22 +111,25 @@ const selectOpportunities = (
         return [];
     }
     
-    // 按优先级排序后，选择前 N 个有足够深度的
     const selected: ArbitrageOpportunity[] = [];
     
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
-        // 跳过重复机会（同一价格已经下过单）
+        // 跳过冷却中的市场
         if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
-            continue;
+            continue;  // 静默跳过，减少日志
         }
         
-        // 检查是否有足够深度
-        const maxTradeUSD = opp.maxShares * opp.combinedCost;
-        if (maxTradeUSD >= CONFIG.MIN_ORDER_SIZE_USD) {
-            selected.push(opp);
-        }
+        selected.push(opp);
+        
+        // 显示选中的机会（带策略信息）
+        const actionEmoji = opp.tradingAction === 'buy_both' ? '⚖️' : 
+                           opp.tradingAction === 'buy_up_only' ? '📈' : '📉';
+        const posInfo = opp.eventAnalysis.hasPosition ? 
+            `仓位:U${opp.eventAnalysis.imbalance > 0 ? '+' : ''}${opp.eventAnalysis.imbalance.toFixed(0)}` : '新仓';
+        
+        Logger.success(`${actionEmoji} ${opp.slug.slice(0, 22)} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${posInfo} | ${opp.tradingAction}`);
     }
     
     return selected;
@@ -193,20 +198,26 @@ const mainLoop = async () => {
     Logger.success('📊 WebSocket 数据就绪，开始监控...');
     Logger.divider();
     
-    // 注册结算回调 - 事件结束时发送通知
+    // 注册结算回调 - 事件结束时发送通知和总结
     onSettlement(async (result: SettlementResult) => {
         const emoji = result.profit >= 0 ? '🎉' : '😢';
         Logger.arbitrage(`${emoji} 事件结算: ${result.position.slug.slice(0, 30)} | ${result.outcome.toUpperCase()} 获胜 | 盈亏: $${result.profit.toFixed(2)}`);
         
-        // 发送 Telegram 通知
-        await notifySettlement(result);
-        
-        // 每次结算后发送总体统计
+        // 获取总体统计
         const overallStats = getOverallStats();
-        if (overallStats.totalSettled > 0 && overallStats.totalSettled % 5 === 0) {
-            // 每 5 次结算发送一次总体统计
-            await notifyOverallStats(overallStats);
-        }
+        
+        // 发送事件结束总结（包含本次盈亏和累计统计）
+        await notifyEventSummary(
+            result.position.title,
+            {
+                outcome: result.outcome,
+                profit: result.profit,
+                profitPercent: result.profitPercent,
+                totalCost: result.totalCost,
+                payout: result.payout,
+            },
+            overallStats
+        );
     });
     
     // 发送 Telegram 启动通知
@@ -214,7 +225,7 @@ const mainLoop = async () => {
     
     let lastLogTime = Date.now();
     let scansSinceLog = 0;
-    let lastStatsNotify = Date.now();
+    let lastPositionReport = Date.now();  // 持仓汇报时间
     let lastPriceLog = Date.now();
     
     // 高速主循环
@@ -289,10 +300,11 @@ const mainLoop = async () => {
                 lastPriceLog = now;
             }
             
-            // 每5分钟发送一次 Telegram 统计
-            if (now - lastStatsNotify >= 5 * 60 * 1000) {
-                await notifyDailyStats(stats);
-                lastStatsNotify = now;
+            // 每2分钟发送一次持仓汇报到 Telegram
+            if (now - lastPositionReport >= 2 * 60 * 1000) {
+                const allPositions = getAllPositions();
+                await notifyPositionReport(allPositions);
+                lastPositionReport = now;
             }
             
         } catch (error) {
