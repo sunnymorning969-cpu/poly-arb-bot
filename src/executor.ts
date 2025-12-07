@@ -269,16 +269,39 @@ export const initClient = async (): Promise<ClobClient> => {
     return clobClient;
 };
 
+// 余额缓存（减少 API 调用）
+let cachedBalance = 0;
+let lastBalanceCheck = 0;
+const BALANCE_CACHE_MS = 30000;  // 30 秒缓存
+
 /**
- * 获取账户余额
+ * 获取账户余额（带缓存）
  */
 export const getBalance = async (): Promise<number> => {
+    const now = Date.now();
+    
+    // 使用缓存
+    if (now - lastBalanceCheck < BALANCE_CACHE_MS && cachedBalance > 0) {
+        return cachedBalance;
+    }
+    
     try {
         const client = await initClient();
-        const balances = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
-        return parseFloat(balances.balance || '0') / 1e6;
+        
+        // 带超时的余额查询
+        const timeoutPromise = new Promise<number>((_, reject) => 
+            setTimeout(() => reject(new Error('余额查询超时')), 5000)
+        );
+        
+        const balancePromise = client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL })
+            .then(balances => parseFloat(balances.balance || '0') / 1e6);
+        
+        cachedBalance = await Promise.race([balancePromise, timeoutPromise]);
+        lastBalanceCheck = now;
+        return cachedBalance;
     } catch (error) {
-        return 0;
+        // 超时或错误时返回缓存值
+        return cachedBalance > 0 ? cachedBalance : 1000;  // 模拟模式假设有 1000
     }
 };
 
@@ -313,18 +336,18 @@ const executeBuy = async (
     cachedPrice: number,  // 使用 WebSocket 缓存的价格
     outcome: string
 ): Promise<{ success: boolean; filled: number; avgPrice: number; cost: number }> => {
+    const askPrice = cachedPrice;
+    const sharesToBuy = amountUSD / askPrice;
+    
+    // 模拟模式：直接返回成功
+    if (CONFIG.SIMULATION_MODE) {
+        // 模拟模式也打印日志
+        Logger.success(`🔵 [模拟] ${outcome}: ${sharesToBuy.toFixed(0)} shares @ $${askPrice.toFixed(3)}`);
+        return { success: true, filled: sharesToBuy, avgPrice: askPrice, cost: amountUSD };
+    }
+    
     try {
         const client = await initClient();
-        
-        // 直接使用缓存价格，不再请求订单簿
-        const askPrice = cachedPrice;
-        
-        const sharesToBuy = amountUSD / askPrice;
-        
-        if (CONFIG.SIMULATION_MODE) {
-            // 模拟模式：静默成功
-            return { success: true, filled: sharesToBuy, avgPrice: askPrice, cost: amountUSD };
-        }
         
         const orderPrice = Math.min(askPrice * 1.005, 0.99);
         const orderArgs = { side: Side.BUY, tokenID: tokenId, amount: amountUSD, price: orderPrice };
@@ -332,11 +355,13 @@ const executeBuy = async (
         const resp = await client.postOrder(signedOrder, OrderType.FOK);
         
         if (resp.success) {
-            Logger.success(`✅ ${outcome}: ${sharesToBuy.toFixed(0)} @ $${askPrice.toFixed(2)}`);
+            Logger.success(`✅ ${outcome}: ${sharesToBuy.toFixed(0)} shares @ $${askPrice.toFixed(3)}`);
             return { success: true, filled: sharesToBuy, avgPrice: askPrice, cost: amountUSD };
         }
+        Logger.warning(`❌ ${outcome}: 订单未成交`);
         return { success: false, filled: 0, avgPrice: 0, cost: 0 };
     } catch (error) {
+        Logger.error(`❌ ${outcome}: 下单失败 - ${error}`);
         return { success: false, filled: 0, avgPrice: 0, cost: 0 };
     }
 };
@@ -379,7 +404,7 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
-    // 检查冷却（同一市场 60 秒内不重复）
+    // 检查冷却（同一市场冷却时间内不重复）
     if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
@@ -389,6 +414,10 @@ export const executeArbitrage = async (
     if (action === 'wait') {
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
+    
+    // 打印执行开始日志
+    const crossTag = opportunity.isCrossPool ? '🔀' : '📊';
+    Logger.info(`${crossTag} 执行 ${action}: Up $${opportunity.upAskPrice.toFixed(3)} | Down $${opportunity.downAskPrice.toFixed(3)}`);
     
     // 根据深度计算下单金额
     let upOrderSize = 0;
@@ -420,12 +449,14 @@ export const executeArbitrage = async (
         }
     }
     
-    // 检查余额
-    const balance = await getBalance();
-    const totalNeeded = upOrderSize + downOrderSize;
-    if (balance < totalNeeded) {
-        Logger.error(`余额不足: $${balance.toFixed(2)} < $${totalNeeded.toFixed(2)}`);
-        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    // 检查余额（模拟模式跳过）
+    if (!CONFIG.SIMULATION_MODE) {
+        const balance = await getBalance();
+        const totalNeeded = upOrderSize + downOrderSize;
+        if (balance < totalNeeded) {
+            Logger.error(`余额不足: $${balance.toFixed(2)} < $${totalNeeded.toFixed(2)}`);
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
     }
     
     let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
@@ -504,8 +535,16 @@ export const executeArbitrage = async (
         recordTradePrice(opportunity.downConditionId, opportunity.upAskPrice, opportunity.downAskPrice);
     }
     
+    // 打印执行结果
+    const success = upResult.success || downResult.success;
+    if (success) {
+        const crossTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
+        const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
+        Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+    }
+    
     return {
-        success: upResult.success || downResult.success,
+        success,
         upFilled: upResult.filled,
         downFilled: downResult.filled,
         totalCost,

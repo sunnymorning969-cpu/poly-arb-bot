@@ -267,32 +267,48 @@ const mainLoop = async () => {
                     if (stats.tradesExecuted >= CONFIG.MAX_DAILY_TRADES) {
                         Logger.warning('已达到每日交易限制，跳过');
                     } else {
-                        // 并行执行
+                        // 并行执行（带超时保护）
                         const tradePromises = selected.map(async (opp) => {
-                            
-                            stats.tradesExecuted++;
-                            const result = await executeArbitrage(opp, 0);
-                            
-                            // 异步发送通知（不阻塞）
-                            notifyTradeExecuted(opp, result);
-                            
-                            return { opp, result };
+                            try {
+                                stats.tradesExecuted++;
+                                const result = await executeArbitrage(opp, 0);
+                                
+                                // 异步发送通知（不阻塞，不等待）
+                                notifyTradeExecuted(opp, result).catch(() => {});
+                                
+                                return { opp, result };
+                            } catch (err) {
+                                Logger.error(`交易执行错误: ${err}`);
+                                return { opp, result: { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 } };
+                            }
                         });
                         
-                        // 只发送第一个机会的通知（避免刷屏）
+                        // 异步发送通知（不阻塞，不等待）
                         if (selected.length > 0) {
-                            notifyArbitrageFound(selected[0]);
+                            notifyArbitrageFound(selected[0]).catch(() => {});
                         }
                         
-                        const results = await Promise.all(tradePromises);
+                        // 带超时的等待（最多 10 秒）
+                        const timeoutPromise = new Promise<never>((_, reject) => 
+                            setTimeout(() => reject(new Error('交易超时')), 10000)
+                        );
                         
-                        // 统计结果
-                        for (const { result } of results) {
-                            if (result.success) {
-                                stats.tradesSuccessful++;
-                                stats.totalCost += result.totalCost;
-                                stats.totalProfit += result.expectedProfit;
+                        try {
+                            const results = await Promise.race([
+                                Promise.all(tradePromises),
+                                timeoutPromise
+                            ]) as { opp: any; result: any }[];
+                            
+                            // 统计结果
+                            for (const { result } of results) {
+                                if (result.success) {
+                                    stats.tradesSuccessful++;
+                                    stats.totalCost += result.totalCost;
+                                    stats.totalProfit += result.expectedProfit;
+                                }
                             }
+                        } catch (timeoutErr) {
+                            Logger.warning('交易执行超时，继续扫描');
                         }
                     }
                 }
@@ -331,7 +347,10 @@ const mainLoop = async () => {
             }
             
         } catch (error) {
-            // 静默处理错误，避免刷屏
+            // 记录错误但不中断循环
+            if (stats.scans % 1000 === 0) {  // 每 1000 次扫描才打印一次错误
+                Logger.error(`扫描错误: ${error}`);
+            }
         }
         
         // 毫秒级间隔
