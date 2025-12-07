@@ -428,31 +428,46 @@ export const executeArbitrage = async (
     let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     let downResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     
-    // 智能下单策略：结合仓位平衡 + 单边价格阈值
-    const shouldBuyUp = upOrderSize > 0 && (
-        imbalance.needBuy === 'up' ||      // 仓位需要补 Up
-        imbalance.needBuy === 'both' ||    // 仓位平衡，都可以买
-        opportunity.upIsCheap              // Up 价格便宜
-    );
+    // 判断是否有真套利（Up + Down < $1.00）
+    const hasRealArbitrage = opportunity.combinedCost < 1.0;
     
-    const shouldBuyDown = downOrderSize > 0 && (
-        imbalance.needBuy === 'down' ||    // 仓位需要补 Down
-        imbalance.needBuy === 'both' ||    // 仓位平衡，都可以买
-        opportunity.downIsCheap            // Down 价格便宜
-    );
+    let shouldBuyUp = false;
+    let shouldBuyDown = false;
+    let strategyType: 'arbitrage' | 'speculation' = 'speculation';
     
-    // 记录策略原因
-    if (opportunity.upIsCheap) {
-        Logger.info(`💰 Up 价格便宜 ($${opportunity.upAskPrice.toFixed(2)} < $${CONFIG.UP_PRICE_THRESHOLD})`);
+    if (hasRealArbitrage) {
+        // 真套利：买两边
+        strategyType = 'arbitrage';
+        shouldBuyUp = upOrderSize > 0;
+        shouldBuyDown = downOrderSize > 0;
+        Logger.info(`🎯 真套利: Up($${opportunity.upAskPrice.toFixed(3)}) + Down($${opportunity.downAskPrice.toFixed(3)}) = $${opportunity.combinedCost.toFixed(3)} < $1.00`);
+    } else {
+        // 没有套利空间，只买单边便宜的（投机）
+        // 注意：只买一边，不买两边！
+        if (opportunity.upIsCheap && !opportunity.downIsCheap) {
+            shouldBuyUp = upOrderSize > 0;
+            Logger.info(`💰 单边投机: Up 便宜 ($${opportunity.upAskPrice.toFixed(3)} < $${CONFIG.UP_PRICE_THRESHOLD})`);
+        } else if (opportunity.downIsCheap && !opportunity.upIsCheap) {
+            shouldBuyDown = downOrderSize > 0;
+            Logger.info(`💰 单边投机: Down 便宜 ($${opportunity.downAskPrice.toFixed(3)} < $${CONFIG.DOWN_PRICE_THRESHOLD})`);
+        } else if (opportunity.upIsCheap && opportunity.downIsCheap) {
+            // 两边都便宜但没有套利空间？选更便宜的那边
+            if (opportunity.upAskPrice < opportunity.downAskPrice) {
+                shouldBuyUp = upOrderSize > 0;
+                Logger.info(`💰 双边便宜，选 Up ($${opportunity.upAskPrice.toFixed(3)} < $${opportunity.downAskPrice.toFixed(3)})`);
+            } else {
+                shouldBuyDown = downOrderSize > 0;
+                Logger.info(`💰 双边便宜，选 Down ($${opportunity.downAskPrice.toFixed(3)} < $${opportunity.upAskPrice.toFixed(3)})`);
+            }
+        }
     }
-    if (opportunity.downIsCheap) {
-        Logger.info(`💰 Down 价格便宜 ($${opportunity.downAskPrice.toFixed(2)} < $${CONFIG.DOWN_PRICE_THRESHOLD})`);
+    
+    // 考虑仓位平衡
+    if (imbalance.needBuy === 'up' && shouldBuyDown && !shouldBuyUp) {
+        Logger.info(`📈 仓位偏 Down，但 Up 太贵，跳过`);
     }
-    if (imbalance.needBuy === 'up') {
-        Logger.info(`📈 仓位偏 Down，需补 Up (差 ${imbalance.upDeficit.toFixed(1)} shares)`);
-    }
-    if (imbalance.needBuy === 'down') {
-        Logger.info(`📉 仓位偏 Up，需补 Down (差 ${imbalance.downDeficit.toFixed(1)} shares)`);
+    if (imbalance.needBuy === 'down' && shouldBuyUp && !shouldBuyDown) {
+        Logger.info(`📉 仓位偏 Up，但 Down 太贵，跳过`);
     }
     
     // 并行执行下单
@@ -504,8 +519,23 @@ export const executeArbitrage = async (
     }
     
     const totalCost = upResult.cost + downResult.cost;
-    const minShares = Math.min(upResult.filled, downResult.filled);
-    const expectedProfit = minShares * (1 - opportunity.combinedCost);
+    
+    // 计算预期利润
+    let expectedProfit = 0;
+    if (strategyType === 'arbitrage') {
+        // 套利：利润 = 最小成交量 * (1 - 合计价格)
+        const minShares = Math.min(upResult.filled, downResult.filled);
+        expectedProfit = minShares * (1 - opportunity.combinedCost);
+    } else {
+        // 投机：利润取决于结果，这里显示预期收益（假设猜对）
+        if (upResult.success && !downResult.success) {
+            expectedProfit = upResult.filled * (1 - opportunity.upAskPrice) - upResult.cost;
+            Logger.info(`📊 投机 Up: 若赢 +$${(upResult.filled - upResult.cost).toFixed(2)}, 若输 -$${upResult.cost.toFixed(2)}`);
+        } else if (downResult.success && !upResult.success) {
+            expectedProfit = downResult.filled * (1 - opportunity.downAskPrice) - downResult.cost;
+            Logger.info(`📊 投机 Down: 若赢 +$${(downResult.filled - downResult.cost).toFixed(2)}, 若输 -$${downResult.cost.toFixed(2)}`);
+        }
+    }
     
     // 记录下单价格（防止重复下单）
     if (upResult.success || downResult.success) {

@@ -238,11 +238,14 @@ const mainLoop = async () => {
                         Logger.warning('已达到每日交易限制，跳过');
                     } else {
                         // 显示发现的机会
-                        Logger.arbitrage(`🎯 发现 ${selected.length} 个机会，并行下单...`);
+                        const arbCount = selected.filter(o => o.combinedCost < 1).length;
+                        const specCount = selected.length - arbCount;
+                        Logger.arbitrage(`🎯 发现 ${arbCount} 个套利 + ${specCount} 个投机机会，下单...`);
                         
                         // 并行执行多个市场的套利
                         const tradePromises = selected.map(async (opp) => {
-                            Logger.info(`   📊 ${opp.slug.slice(0, 35)} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | ${opp.profitPercent.toFixed(1)}%`);
+                            const type = opp.combinedCost < 1 ? '套利' : '投机';
+                            Logger.info(`   📊 [${type}] ${opp.slug.slice(0, 30)} | Up:$${opp.upAskPrice.toFixed(3)} Down:$${opp.downAskPrice.toFixed(3)} | 合计:$${opp.combinedCost.toFixed(3)}`);
                             
                             stats.tradesExecuted++;
                             const result = await executeArbitrage(opp, 0);
