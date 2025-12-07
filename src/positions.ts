@@ -248,6 +248,123 @@ export const getAllPositions = (): Position[] => {
     return Array.from(positions.values());
 };
 
+// ==================== 跨池子套利支持 ====================
+
+/**
+ * 时间段类型
+ */
+export type TimeGroup = '15min' | '1hr';
+
+/**
+ * 获取仓位的时间段分组
+ */
+export const getTimeGroup = (slug: string): TimeGroup => {
+    if (slug.includes('15m') || slug.includes('15min')) {
+        return '15min';
+    }
+    return '1hr';
+};
+
+/**
+ * 获取组合仓位分析（跨池子）
+ * 将同一时间段的 BTC 和 ETH 视为一个组合
+ */
+export const getGroupCostAnalysis = (timeGroup: TimeGroup): {
+    hasPosition: boolean;
+    totalUpShares: number;      // 组合 Up 总量（BTC Up + ETH Up）
+    totalDownShares: number;    // 组合 Down 总量（BTC Down + ETH Down）
+    totalUpCost: number;        // 组合 Up 总成本
+    totalDownCost: number;      // 组合 Down 总成本
+    totalCost: number;          // 组合总成本
+    minShares: number;          // 较少的一边
+    avgCostPerPair: number;     // 每对平均成本
+    currentProfit: number;      // 预期利润
+    profitPercent: number;      // 利润率
+    imbalance: number;          // 不平衡度 (Up - Down)
+    needMoreUp: boolean;
+    needMoreDown: boolean;
+    positions: Position[];      // 组内的所有仓位
+} => {
+    const groupPositions: Position[] = [];
+    let totalUpShares = 0;
+    let totalDownShares = 0;
+    let totalUpCost = 0;
+    let totalDownCost = 0;
+    
+    for (const pos of positions.values()) {
+        if (getTimeGroup(pos.slug) === timeGroup) {
+            groupPositions.push(pos);
+            totalUpShares += pos.upShares;
+            totalDownShares += pos.downShares;
+            totalUpCost += pos.upCost;
+            totalDownCost += pos.downCost;
+        }
+    }
+    
+    const totalCost = totalUpCost + totalDownCost;
+    const minShares = Math.min(totalUpShares, totalDownShares);
+    const avgCostPerPair = minShares > 0 ? totalCost / minShares : 0;
+    const currentProfit = minShares - totalCost;
+    const profitPercent = totalCost > 0 ? (currentProfit / totalCost) * 100 : 0;
+    const imbalance = totalUpShares - totalDownShares;
+    
+    return {
+        hasPosition: groupPositions.length > 0 && (totalUpShares > 0 || totalDownShares > 0),
+        totalUpShares,
+        totalDownShares,
+        totalUpCost,
+        totalDownCost,
+        totalCost,
+        minShares,
+        avgCostPerPair,
+        currentProfit,
+        profitPercent,
+        imbalance,
+        needMoreUp: imbalance < 0,
+        needMoreDown: imbalance > 0,
+        positions: groupPositions,
+    };
+};
+
+/**
+ * 预测跨池买入后的组合成本
+ */
+export const predictGroupCostAfterBuy = (
+    timeGroup: TimeGroup,
+    buyUp: number,      // 要买的 Up（不管是 BTC 还是 ETH）
+    upPrice: number,
+    buyDown: number,    // 要买的 Down
+    downPrice: number,
+): {
+    newAvgCostPerPair: number;
+    newMinShares: number;
+    newProfit: number;
+    newProfitPercent: number;
+    worthBuying: boolean;
+} => {
+    const current = getGroupCostAnalysis(timeGroup);
+    
+    const newUpShares = current.totalUpShares + buyUp;
+    const newDownShares = current.totalDownShares + buyDown;
+    const newUpCost = current.totalUpCost + (buyUp * upPrice);
+    const newDownCost = current.totalDownCost + (buyDown * downPrice);
+    const newTotalCost = newUpCost + newDownCost;
+    const newMinShares = Math.min(newUpShares, newDownShares);
+    const newAvgCostPerPair = newMinShares > 0 ? newTotalCost / newMinShares : 0;
+    const newProfit = newMinShares - newTotalCost;
+    const newProfitPercent = newTotalCost > 0 ? (newProfit / newTotalCost) * 100 : 0;
+    
+    const worthBuying = newAvgCostPerPair < 1.0 || newProfit > current.currentProfit;
+    
+    return {
+        newAvgCostPerPair,
+        newMinShares,
+        newProfit,
+        newProfitPercent,
+        worthBuying,
+    };
+};
+
 /**
  * 获取仓位统计
  */

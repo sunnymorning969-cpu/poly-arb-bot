@@ -452,11 +452,11 @@ export const executeArbitrage = async (
         await Promise.all(promises);
     }
     
-    // 更新仓位
+    // 更新仓位（支持跨池子：Up 和 Down 可能在不同市场）
     if (upResult.success) {
         updatePosition(
-            opportunity.conditionId,
-            opportunity.slug,
+            opportunity.conditionId,  // Up 所在的市场
+            opportunity.upMarketSlug || opportunity.slug,
             opportunity.title,
             'up',
             upResult.filled,
@@ -466,9 +466,12 @@ export const executeArbitrage = async (
     }
     
     if (downResult.success) {
+        // 跨池子时，Down 可能在不同的市场
+        const downConditionId = opportunity.downConditionId || opportunity.conditionId;
+        const downSlug = opportunity.downMarketSlug || opportunity.slug;
         updatePosition(
-            opportunity.conditionId,
-            opportunity.slug,
+            downConditionId,
+            downSlug,
             opportunity.title,
             'down',
             downResult.filled,
@@ -493,9 +496,12 @@ export const executeArbitrage = async (
         expectedProfit = 0;
     }
     
-    // 记录下单时间（防止重复）
-    if (upResult.success || downResult.success) {
+    // 记录下单时间（防止重复，跨池子时记录两个市场）
+    if (upResult.success) {
         recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
+    }
+    if (downResult.success && opportunity.isCrossPool && opportunity.downConditionId) {
+        recordTradePrice(opportunity.downConditionId, opportunity.upAskPrice, opportunity.downAskPrice);
     }
     
     return {

@@ -11,7 +11,7 @@ import axios from 'axios';
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
-import { getEventCostAnalysis, predictCostAfterBuy } from './positions';
+import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
 
 // 市场数据接口
 export interface MarketToken {
@@ -21,11 +21,18 @@ export interface MarketToken {
 }
 
 export interface ArbitrageOpportunity {
-    conditionId: string;
-    slug: string;
+    // 基本信息（可能跨池子）
+    conditionId: string;         // Up 所在市场的 conditionId
+    slug: string;                // Up 所在市场的 slug
     title: string;
     upToken: MarketToken;
     downToken: MarketToken;
+    // 跨池子支持
+    timeGroup: TimeGroup;        // 时间段分组
+    isCrossPool: boolean;        // 是否跨池子
+    upMarketSlug: string;        // Up 来自哪个市场
+    downMarketSlug: string;      // Down 来自哪个市场
+    downConditionId: string;     // Down 所在市场的 conditionId
     // 从订单簿获取的实时价格
     upAskPrice: number;
     downAskPrice: number;
@@ -40,17 +47,29 @@ export interface ArbitrageOpportunity {
     upIsCheap: boolean;
     downIsCheap: boolean;
     priority: number;
-    // 事件级策略（新增）
-    eventAnalysis: {
+    // 组合级策略（跨池子）
+    groupAnalysis: {
         hasPosition: boolean;
-        currentAvgCost: number;     // 当前平均成本
-        currentProfit: number;      // 当前预期利润
-        imbalance: number;          // 不平衡度
-        needMoreUp: boolean;        // 需要更多 Up
-        needMoreDown: boolean;      // 需要更多 Down
+        currentAvgCost: number;     // 组合当前平均成本
+        currentProfit: number;      // 组合当前预期利润
+        imbalance: number;          // 组合不平衡度
+        needMoreUp: boolean;        // 组合需要更多 Up
+        needMoreDown: boolean;      // 组合需要更多 Down
         predictedAvgCost: number;   // 买入后预测的平均成本
         predictedProfit: number;    // 买入后预测的利润
         worthBuying: boolean;       // 是否值得买入
+    };
+    // 兼容旧字段
+    eventAnalysis: {
+        hasPosition: boolean;
+        currentAvgCost: number;
+        currentProfit: number;
+        imbalance: number;
+        needMoreUp: boolean;
+        needMoreDown: boolean;
+        predictedAvgCost: number;
+        predictedProfit: number;
+        worthBuying: boolean;
     };
     // 交易建议
     tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait';
@@ -71,13 +90,39 @@ interface PolymarketMarket {
     closed: boolean;
 }
 
-// 市场缓存（30 秒刷新一次，确保 15 分钟事件能及时切换）
+// 市场缓存
 let cachedMarkets: PolymarketMarket[] = [];
 let lastMarketFetch = 0;
-const MARKET_CACHE_DURATION = 30000;  // 市场列表缓存 30 秒
+let lastSlugs: string[] = [];  // 记录上次的 slug，用于检测变化
+let lastSlugCheck = 0;  // 上次检查 slug 的时间
+const MARKET_CACHE_DURATION = 5 * 60 * 1000;  // 市场列表缓存 5 分钟
+const SLUG_CHECK_INTERVAL = 10 * 1000;  // 每 10 秒检查一次 slug 变化
 
 // 市场 token 映射（用于快速查找）
 let marketTokenMap = new Map<string, { market: PolymarketMarket; upToken: any; downToken: any }>();
+
+/**
+ * 检查并处理事件切换（15分钟边界）
+ * 由主循环定期调用
+ */
+export const checkEventSwitch = async (): Promise<boolean> => {
+    const now = Date.now();
+    if (now - lastSlugCheck < SLUG_CHECK_INTERVAL) {
+        return false;  // 未到检查时间
+    }
+    lastSlugCheck = now;
+    
+    const currentSlugs = generateMarketSlugs();
+    const slugsChanged = lastSlugs.length > 0 && 
+        currentSlugs.some((slug, i) => slug !== lastSlugs[i]);
+    
+    if (slugsChanged) {
+        Logger.info(`🔄 检测到事件切换，更新市场订阅...`);
+        await fetchCryptoMarkets();
+        return true;
+    }
+    return false;
+};
 
 /**
  * 根据当前 ET 时间生成市场 slug
@@ -229,22 +274,31 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
 }
 
 /**
- * 获取 BTC/ETH Up/Down 市场（带缓存，60 秒刷新）
+ * 获取 BTC/ETH Up/Down 市场（智能缓存，只有 slug 变化时才重新订阅）
  */
 export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
     const now = Date.now();
     
-    // 市场列表不需要频繁更新，60 秒一次足够
-    if (cachedMarkets.length > 0 && (now - lastMarketFetch) < MARKET_CACHE_DURATION) {
+    // 根据当前时间生成 slug
+    const currentSlugs = generateMarketSlugs();
+    
+    // 检查 slug 是否变化（15 分钟事件切换时会变）
+    const slugsChanged = lastSlugs.length === 0 || 
+        currentSlugs.some((slug, i) => slug !== lastSlugs[i]);
+    
+    // 如果 slug 没变且缓存未过期，直接返回缓存
+    if (!slugsChanged && cachedMarkets.length > 0 && (now - lastMarketFetch) < MARKET_CACHE_DURATION) {
         return cachedMarkets;
     }
     
+    // slug 变化了，需要重新获取
+    if (slugsChanged && lastSlugs.length > 0) {
+        Logger.info(`🔄 检测到事件切换，更新市场订阅...`);
+    }
+    
     try {
-        // 根据当前时间生成 slug
-        const slugs = generateMarketSlugs();
-        
         // 并行获取所有市场
-        const marketPromises = slugs.map(slug => fetchEventBySlug(slug));
+        const marketPromises = currentSlugs.map(slug => fetchEventBySlug(slug));
         const results = await Promise.all(marketPromises);
         
         // 过滤有效且未关闭的市场
@@ -269,14 +323,14 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
             }
         }
         
-        Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH Up/Down 市场`);
-        
-        // 清除旧的订单簿数据，订阅新的 token
-        if (tokenIds.length > 0) {
+        // 只有 slug 变化时才重新订阅 WebSocket
+        if (slugsChanged && tokenIds.length > 0) {
+            Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH Up/Down 市场`);
             orderBookManager.clearStaleOrderBooks(tokenIds);
             orderBookManager.subscribe(tokenIds);
         }
         
+        lastSlugs = currentSlugs;
         lastMarketFetch = now;
         return cachedMarkets;
     } catch (error) {
@@ -303,18 +357,17 @@ export const initWebSocket = async (): Promise<void> => {
 };
 
 /**
- * 扫描套利机会（事件级套利策略）
+ * 扫描套利机会 - 跨池子策略
  * 
- * 新策略：
- * 1. 不只看单笔 Up+Down < $1.00
- * 2. 考虑当前仓位的平均成本
- * 3. 考虑仓位不平衡度
- * 4. 即使 Up+Down >= $1.00，如果能改善整体仓位也值得交易
+ * 核心策略：
+ * 1. 按时间段分组（15min、1hr）
+ * 2. 在组内找最便宜的 Up 和 Down（可能来自不同池子）
+ * 3. 根据组合仓位平衡决定买什么
+ * 4. 确保组合整体平均成本 < $1.00
  */
 export const scanArbitrageOpportunities = async (silent: boolean = false): Promise<ArbitrageOpportunity[]> => {
-    // 检查是否需要刷新市场列表
-    const now = Date.now();
-    if (now - lastMarketFetch > MARKET_CACHE_DURATION) {
+    // 只在需要时刷新市场
+    if (cachedMarkets.length === 0) {
         await fetchCryptoMarkets();
     }
     
@@ -325,122 +378,198 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
     
     const opportunities: ArbitrageOpportunity[] = [];
     
-    // 遍历所有市场
+    // 按时间段分组市场
+    const groups: Map<TimeGroup, Array<{
+        conditionId: string;
+        market: PolymarketMarket;
+        upToken: any;
+        downToken: any;
+        upBook: OrderBookData;
+        downBook: OrderBookData;
+    }>> = new Map();
+    
     for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
         const upBook = orderBookManager.getOrderBook(upToken.token_id);
         const downBook = orderBookManager.getOrderBook(downToken.token_id);
         
         if (!upBook || !downBook) continue;
         
-        const combinedCost = upBook.bestAsk + downBook.bestAsk;
-        const profitPercent = (1 - combinedCost) * 100;
-        const maxShares = Math.min(upBook.bestAskSize, downBook.bestAskSize);
+        const timeGroup = getTimeGroup(market.slug);
+        if (!groups.has(timeGroup)) {
+            groups.set(timeGroup, []);
+        }
+        groups.get(timeGroup)!.push({ conditionId, market, upToken, downToken, upBook, downBook });
+    }
+    
+    // 在每个时间段组内寻找套利机会
+    for (const [timeGroup, markets] of groups) {
+        if (markets.length === 0) continue;
         
-        // 获取当前仓位分析
-        const eventAnalysis = getEventCostAnalysis(market.condition_id);
+        // 找出组内最便宜的 Up 和最便宜的 Down
+        let cheapestUp: typeof markets[0] | null = null;
+        let cheapestDown: typeof markets[0] | null = null;
         
-        // 预测买入后的成本（假设两边各买 maxShares）
-        const prediction = predictCostAfterBuy(
-            market.condition_id,
+        for (const m of markets) {
+            if (!cheapestUp || m.upBook.bestAsk < cheapestUp.upBook.bestAsk) {
+                cheapestUp = m;
+            }
+            if (!cheapestDown || m.downBook.bestAsk < cheapestDown.downBook.bestAsk) {
+                cheapestDown = m;
+            }
+        }
+        
+        if (!cheapestUp || !cheapestDown) continue;
+        
+        // 获取组合仓位分析
+        const groupAnalysis = getGroupCostAnalysis(timeGroup);
+        
+        // 计算跨池组合成本
+        const crossPoolCost = cheapestUp.upBook.bestAsk + cheapestDown.downBook.bestAsk;
+        const crossPoolProfit = (1 - crossPoolCost) * 100;
+        const isCrossPool = cheapestUp.conditionId !== cheapestDown.conditionId;
+        
+        // 预测组合买入后的成本
+        const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
+        const groupPrediction = predictGroupCostAfterBuy(
+            timeGroup,
             maxShares,
-            upBook.bestAsk,
+            cheapestUp.upBook.bestAsk,
             maxShares,
-            downBook.bestAsk
+            cheapestDown.downBook.bestAsk
         );
         
         // 决定交易动作
-        // 核心原则：必须保证整体平均成本 < $1.00，确保无论结果如何都是盈利
-        // 不追求随机性，追求确定性盈利
         let tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait' = 'wait';
         let priority = 0;
         
-        // 策略 1: 新开仓 - 只有 combinedCost < $1.00 才开仓
-        if (!eventAnalysis.hasPosition && combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT) {
+        const upIsCheap = cheapestUp.upBook.bestAsk < 0.50;
+        const downIsCheap = cheapestDown.downBook.bestAsk < 0.50;
+        
+        // 策略 1: 跨池组合成本 < $1.00，同时买入（最优情况）
+        if (crossPoolCost < 1.0 && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT) {
             tradingAction = 'buy_both';
-            priority = profitPercent * 10;  // 利润越高优先级越高
+            priority = crossPoolProfit * 10 + (isCrossPool ? 5 : 0);  // 跨池加分
         }
-        // 策略 2: 已有仓位加仓 - 只有买入后整体平均成本 < $1.00 才加仓
-        else if (eventAnalysis.hasPosition) {
-            // 双边加仓：必须保证买入后整体平均成本 < $1.00
-            if (prediction.newAvgCostPerPair < 1.0) {
-                tradingAction = 'buy_both';
-                priority = (1.0 - prediction.newAvgCostPerPair) * 100;  // 成本越低优先级越高
+        // 策略 2: 无仓位时，买便宜的一边
+        else if (!groupAnalysis.hasPosition) {
+            if (upIsCheap && cheapestUp.upBook.bestAsk < cheapestDown.downBook.bestAsk) {
+                tradingAction = 'buy_up_only';
+                priority = (0.50 - cheapestUp.upBook.bestAsk) * 20;
+            } else if (downIsCheap && cheapestDown.downBook.bestAsk < cheapestUp.upBook.bestAsk) {
+                tradingAction = 'buy_down_only';
+                priority = (0.50 - cheapestDown.downBook.bestAsk) * 20;
             }
-            // 单边平衡：仓位不平衡时，买入较少的一边
-            else if (Math.abs(eventAnalysis.imbalance) > 5) {
-                // 需要更多 Up
-                if (eventAnalysis.needMoreUp && upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD) {
-                    const upOnlyPrediction = predictCostAfterBuy(
-                        market.condition_id,
-                        Math.min(upBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
-                        upBook.bestAsk,
-                        0,
-                        downBook.bestAsk
-                    );
-                    // 只有买入后整体平均成本 < $1.00 才买入
-                    if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
-                        tradingAction = 'buy_up_only';
-                        priority = 5;
-                    }
+        }
+        // 策略 3: 有仓位时，根据组合平衡决定
+        else if (groupAnalysis.hasPosition) {
+            // 3a: 如果买入后组合成本 < $1.00，双边加仓
+            if (groupPrediction.newAvgCostPerPair < 1.0) {
+                tradingAction = 'buy_both';
+                priority = (1.0 - groupPrediction.newAvgCostPerPair) * 100;
+            }
+            // 3b: 组合需要更多 Up
+            else if (groupAnalysis.needMoreUp && upIsCheap) {
+                const upOnlyPrediction = predictGroupCostAfterBuy(
+                    timeGroup,
+                    Math.min(cheapestUp.upBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
+                    cheapestUp.upBook.bestAsk,
+                    0,
+                    cheapestDown.downBook.bestAsk
+                );
+                if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
+                    tradingAction = 'buy_up_only';
+                    priority = 8;
                 }
-                // 需要更多 Down
-                else if (eventAnalysis.needMoreDown && downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD) {
-                    const downOnlyPrediction = predictCostAfterBuy(
-                        market.condition_id,
-                        0,
-                        upBook.bestAsk,
-                        Math.min(downBook.bestAskSize, Math.abs(eventAnalysis.imbalance)),
-                        downBook.bestAsk
-                    );
-                    // 只有买入后整体平均成本 < $1.00 才买入
-                    if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
-                        tradingAction = 'buy_down_only';
-                        priority = 5;
-                    }
+            }
+            // 3c: 组合需要更多 Down
+            else if (groupAnalysis.needMoreDown && downIsCheap) {
+                const downOnlyPrediction = predictGroupCostAfterBuy(
+                    timeGroup,
+                    0,
+                    cheapestUp.upBook.bestAsk,
+                    Math.min(cheapestDown.downBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
+                    cheapestDown.downBook.bestAsk
+                );
+                if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
+                    tradingAction = 'buy_down_only';
+                    priority = 8;
+                }
+            }
+            // 3d: 某边特别便宜
+            else if (upIsCheap && cheapestUp.upBook.bestAsk < 0.45) {
+                const upOnlyPrediction = predictGroupCostAfterBuy(timeGroup, 50, cheapestUp.upBook.bestAsk, 0, cheapestDown.downBook.bestAsk);
+                if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
+                    tradingAction = 'buy_up_only';
+                    priority = 3;
+                }
+            }
+            else if (downIsCheap && cheapestDown.downBook.bestAsk < 0.45) {
+                const downOnlyPrediction = predictGroupCostAfterBuy(timeGroup, 0, cheapestUp.upBook.bestAsk, 50, cheapestDown.downBook.bestAsk);
+                if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
+                    tradingAction = 'buy_down_only';
+                    priority = 3;
                 }
             }
         }
         
         // 只添加有动作的机会
         if (tradingAction !== 'wait') {
-            const upIsCheap = upBook.bestAsk < CONFIG.UP_PRICE_THRESHOLD;
-            const downIsCheap = downBook.bestAsk < CONFIG.DOWN_PRICE_THRESHOLD;
-            
             opportunities.push({
-                conditionId: market.condition_id,
-                slug: market.slug,
-                title: market.question,
+                // 基本信息
+                conditionId: cheapestUp.conditionId,
+                slug: cheapestUp.market.slug,
+                title: `${timeGroup} 组合: ${cheapestUp.market.slug.split('-')[0].toUpperCase()} Up + ${cheapestDown.market.slug.split('-')[0].toUpperCase()} Down`,
                 upToken: {
-                    token_id: upToken.token_id,
-                    outcome: upToken.outcome,
-                    price: upToken.price,
+                    token_id: cheapestUp.upToken.token_id,
+                    outcome: cheapestUp.upToken.outcome,
+                    price: cheapestUp.upToken.price,
                 },
                 downToken: {
-                    token_id: downToken.token_id,
-                    outcome: downToken.outcome,
-                    price: downToken.price,
+                    token_id: cheapestDown.downToken.token_id,
+                    outcome: cheapestDown.downToken.outcome,
+                    price: cheapestDown.downToken.price,
                 },
-                upAskPrice: upBook.bestAsk,
-                downAskPrice: downBook.bestAsk,
-                upAskSize: upBook.bestAskSize,
-                downAskSize: downBook.bestAskSize,
-                combinedCost,
-                profitPercent,
+                // 跨池子信息
+                timeGroup,
+                isCrossPool,
+                upMarketSlug: cheapestUp.market.slug,
+                downMarketSlug: cheapestDown.market.slug,
+                downConditionId: cheapestDown.conditionId,
+                // 价格信息
+                upAskPrice: cheapestUp.upBook.bestAsk,
+                downAskPrice: cheapestDown.downBook.bestAsk,
+                upAskSize: cheapestUp.upBook.bestAskSize,
+                downAskSize: cheapestDown.downBook.bestAskSize,
+                combinedCost: crossPoolCost,
+                profitPercent: crossPoolProfit,
                 maxShares,
-                endDate: market.end_date_iso,
+                endDate: cheapestUp.market.end_date_iso,
                 upIsCheap,
                 downIsCheap,
                 priority,
+                // 组合分析
+                groupAnalysis: {
+                    hasPosition: groupAnalysis.hasPosition,
+                    currentAvgCost: groupAnalysis.avgCostPerPair,
+                    currentProfit: groupAnalysis.currentProfit,
+                    imbalance: groupAnalysis.imbalance,
+                    needMoreUp: groupAnalysis.needMoreUp,
+                    needMoreDown: groupAnalysis.needMoreDown,
+                    predictedAvgCost: groupPrediction.newAvgCostPerPair,
+                    predictedProfit: groupPrediction.newProfit,
+                    worthBuying: groupPrediction.worthBuying,
+                },
+                // 兼容旧字段
                 eventAnalysis: {
-                    hasPosition: eventAnalysis.hasPosition,
-                    currentAvgCost: eventAnalysis.avgCostPerPair,
-                    currentProfit: eventAnalysis.currentProfit,
-                    imbalance: eventAnalysis.imbalance,
-                    needMoreUp: eventAnalysis.needMoreUp,
-                    needMoreDown: eventAnalysis.needMoreDown,
-                    predictedAvgCost: prediction.newAvgCostPerPair,
-                    predictedProfit: prediction.newProfit,
-                    worthBuying: prediction.worthBuying,
+                    hasPosition: groupAnalysis.hasPosition,
+                    currentAvgCost: groupAnalysis.avgCostPerPair,
+                    currentProfit: groupAnalysis.currentProfit,
+                    imbalance: groupAnalysis.imbalance,
+                    needMoreUp: groupAnalysis.needMoreUp,
+                    needMoreDown: groupAnalysis.needMoreDown,
+                    predictedAvgCost: groupPrediction.newAvgCostPerPair,
+                    predictedProfit: groupPrediction.newProfit,
+                    worthBuying: groupPrediction.worthBuying,
                 },
                 tradingAction,
             });

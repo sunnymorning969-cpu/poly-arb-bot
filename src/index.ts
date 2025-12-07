@@ -9,7 +9,7 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats, notifyPositionReport, notifyEventSummary } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
@@ -116,20 +116,29 @@ const selectOpportunities = (
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
-        // 跳过冷却中的市场
+        // 跳过冷却中的市场（跨池子时检查两个市场）
         if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
-            continue;  // 静默跳过，减少日志
+            continue;
+        }
+        if (opp.isCrossPool && opp.downConditionId && isDuplicateOpportunity(opp.downConditionId, opp.upAskPrice, opp.downAskPrice)) {
+            continue;
         }
         
         selected.push(opp);
         
-        // 显示选中的机会（带策略信息）
+        // 显示选中的机会（带跨池子和策略信息）
         const actionEmoji = opp.tradingAction === 'buy_both' ? '⚖️' : 
                            opp.tradingAction === 'buy_up_only' ? '📈' : '📉';
-        const posInfo = opp.eventAnalysis.hasPosition ? 
-            `仓位:U${opp.eventAnalysis.imbalance > 0 ? '+' : ''}${opp.eventAnalysis.imbalance.toFixed(0)}` : '新仓';
+        const crossPoolTag = opp.isCrossPool ? '🔀' : '';
+        const groupInfo = opp.groupAnalysis?.hasPosition ? 
+            `组:U${opp.groupAnalysis.imbalance > 0 ? '+' : ''}${opp.groupAnalysis.imbalance.toFixed(0)}` : '新仓';
         
-        Logger.success(`${actionEmoji} ${opp.slug.slice(0, 22)} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${posInfo} | ${opp.tradingAction}`);
+        // 显示 Up 和 Down 来源
+        const upSource = opp.upMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+        const downSource = opp.downMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+        const sourceInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : opp.timeGroup;
+        
+        Logger.success(`${actionEmoji}${crossPoolTag} ${sourceInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
     }
     
     return selected;
@@ -292,9 +301,10 @@ const mainLoop = async () => {
                 scansSinceLog = 0;
             }
             
-            // 每15秒检查并结算已到期仓位（提高频率）
+            // 每15秒检查：结算到期仓位 + 事件切换
             if (now - lastPriceLog >= 15000) {
                 checkAndSettleExpired();
+                await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
             }
             
