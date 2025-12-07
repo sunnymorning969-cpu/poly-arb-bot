@@ -140,14 +140,57 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
             if (outcomes && Array.isArray(outcomes) && outcomes.length === 2) {
                 const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
                 if (outcomeNames.includes('up') && outcomeNames.includes('down')) {
+                    // 检查 clobTokenIds 是否有效
+                    if (!clobTokenIds || !Array.isArray(clobTokenIds) || clobTokenIds.length < 2) {
+                        Logger.warning(`   ⚠️ ${slug} - clobTokenIds 无效: ${JSON.stringify(clobTokenIds)}`);
+                        return null;
+                    }
+                    
                     // 构建 tokens 数组
                     const tokens = [];
                     for (let i = 0; i < outcomes.length; i++) {
+                        const tokenId = String(clobTokenIds[i] || '');
+                        if (!tokenId) {
+                            Logger.warning(`   ⚠️ ${slug} - token ${i} 为空`);
+                            return null;
+                        }
                         tokens.push({
-                            token_id: clobTokenIds?.[i] || '',
+                            token_id: tokenId,
                             outcome: outcomes[i],
                             price: outcomePrices?.[i] ? parseFloat(outcomePrices[i]) : 0.5,
                         });
+                    }
+                    
+                    Logger.info(`   ✅ ${slug} - tokens: ${tokens.map(t => t.outcome + ':' + t.token_id.slice(0, 12)).join(', ')}`);
+                    
+                    // 计算结束时间（从 slug 计算，比 API 返回的更可靠）
+                    let endDateIso = market.endDateIso || market.endDate || event.endDate;
+                    
+                    // 15分钟市场：slug 包含时间戳
+                    const timestampMatch = slug.match(/(\d{10})$/);
+                    if (timestampMatch) {
+                        const startTimestamp = parseInt(timestampMatch[1]);
+                        const endTimestamp = startTimestamp + 15 * 60;  // +15分钟
+                        endDateIso = new Date(endTimestamp * 1000).toISOString();
+                    }
+                    
+                    // 1小时市场：从 slug 解析小时，结束时间 = 开始时间 + 1小时
+                    const hourMatch = slug.match(/(\d{1,2})(am|pm)-et$/);
+                    if (hourMatch) {
+                        // 获取当前 ET 日期
+                        const nowMs = Date.now();
+                        const etMs = nowMs - 5 * 3600 * 1000;
+                        const etDate = new Date(etMs);
+                        
+                        let hour = parseInt(hourMatch[1]);
+                        const isPM = hourMatch[2] === 'pm';
+                        if (isPM && hour !== 12) hour += 12;
+                        if (!isPM && hour === 12) hour = 0;
+                        
+                        // 设置结束时间 = 开始时间 + 1小时
+                        etDate.setUTCHours(hour + 1, 0, 0, 0);
+                        const endTimestamp = etDate.getTime() + 5 * 3600 * 1000;  // 转回 UTC
+                        endDateIso = new Date(endTimestamp).toISOString();
                     }
                     
                     return {
@@ -155,7 +198,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                         question: market.question || event.title,
                         slug: slug,
                         tokens,
-                        end_date_iso: market.endDateIso || market.endDate || event.endDate,
+                        end_date_iso: endDateIso,
                         active: market.active !== false,
                         closed: market.closed === true,
                     };
@@ -215,6 +258,7 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
         
         // 清除旧的订单簿数据，订阅新的 token
         if (tokenIds.length > 0) {
+            Logger.info(`📡 需要订阅 ${tokenIds.length} 个 token: ${tokenIds.map(t => t.slice(0, 12)).join(', ')}`);
             orderBookManager.clearStaleOrderBooks(tokenIds);
             orderBookManager.subscribe(tokenIds);
         }
@@ -252,6 +296,11 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
     const now = Date.now();
     if (now - lastMarketFetch > MARKET_CACHE_DURATION) {
         await fetchCryptoMarkets();
+    }
+    
+    // 检查 WebSocket 是否有新鲜数据（避免启动时用旧数据误判）
+    if (!orderBookManager.hasFreshData()) {
+        return [];
     }
     
     const opportunities: ArbitrageOpportunity[] = [];
@@ -386,6 +435,35 @@ export const getCurrentPrices = (): { market: string; upAsk: number | null; down
     return prices;
 };
 
+/**
+ * 获取调试信息
+ */
+export const getDebugInfo = (): string => {
+    const wsBooks = orderBookManager.cachedCount;
+    const mapTokens = marketTokenMap.size * 2;  // 每个市场 2 个 token
+    
+    // 检查每个市场的 token 是否在 orderBooks 中
+    let matched = 0;
+    let missing: string[] = [];
+    
+    for (const [_, { market, upToken, downToken }] of marketTokenMap) {
+        const upBook = orderBookManager.getOrderBook(upToken.token_id);
+        const downBook = orderBookManager.getOrderBook(downToken.token_id);
+        
+        if (upBook) matched++;
+        else missing.push(`${market.slug.slice(0, 20)}/Up`);
+        
+        if (downBook) matched++;
+        else missing.push(`${market.slug.slice(0, 20)}/Down`);
+    }
+    
+    if (missing.length > 0) {
+        return `WS有${wsBooks}个book, 需要${mapTokens}个, 匹配${matched}个, 缺失: ${missing.slice(0, 4).join(', ')}`;
+    }
+    
+    return `WS有${wsBooks}个book, 需要${mapTokens}个, 全部匹配✅`;
+};
+
 export default {
     fetchCryptoMarkets,
     initWebSocket,
@@ -393,4 +471,5 @@ export default {
     printOpportunities,
     getWebSocketStatus,
     getCurrentPrices,
+    getDebugInfo,
 };

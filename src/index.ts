@@ -9,8 +9,8 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, getCurrentPrices } from './scanner';
-import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isOnCooldown } from './executor';
+import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, getCurrentPrices, getDebugInfo } from './scanner';
+import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
@@ -115,8 +115,8 @@ const selectOpportunities = (
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
-        // 跳过冷却中的市场
-        if (isOnCooldown(opp.conditionId)) {
+        // 跳过重复机会（同一价格已经下过单）
+        if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
             continue;
         }
         
@@ -177,7 +177,20 @@ const mainLoop = async () => {
     
     printConfig();
     
-    Logger.success('🚀 机器人启动！WebSocket 实时监控中...');
+    Logger.success('🚀 机器人启动！等待 WebSocket 数据...');
+    
+    // 等待 WebSocket 返回真实数据（最多 10 秒）
+    let waitCount = 0;
+    while (waitCount < 20) {
+        const wsStatus = getWebSocketStatus();
+        if (wsStatus.cachedOrderBooks >= 4) {  // 至少要有 4 个订单簿（2个市场 x 2个token）
+            break;
+        }
+        await new Promise(r => setTimeout(r, 500));
+        waitCount++;
+    }
+    
+    Logger.success('📊 WebSocket 数据就绪，开始监控...');
     Logger.divider();
     
     // 注册结算回调 - 事件结束时发送通知
@@ -275,8 +288,10 @@ const mainLoop = async () => {
                 checkAndSettleExpired();
             }
             
-            // 每15秒打印一次市场价格
+            // 每15秒打印一次市场价格和调试信息
             if (now - lastPriceLog >= 15000) {
+                Logger.info(`🔍 调试: ${getDebugInfo()}`);
+                
                 const prices = getCurrentPrices();
                 if (prices.length > 0) {
                     Logger.info('📊 当前市场价格:');

@@ -98,47 +98,35 @@ class OrderBookManager {
         try {
             this.msgCount++;
             
-            // 调试：打印前几条消息
-            if (this.debugMode && this.msgCount <= 5) {
-                Logger.info(`🔔 WS消息 #${this.msgCount}: ${data.slice(0, 200)}...`);
-            }
+            const parsed = JSON.parse(data);
             
-            const messages: WSMessage[] = JSON.parse(data);
-            
-            if (!Array.isArray(messages)) {
-                // 可能是单个消息或错误响应
-                if (this.debugMode && this.msgCount <= 5) {
-                    Logger.warning(`   非数组消息，跳过`);
+            // 处理数组消息（订单簿快照）
+            if (Array.isArray(parsed)) {
+                const bookCount = parsed.filter(m => m.event_type === 'book').length;
+                if (bookCount > 0 && this.debugMode) {
+                    Logger.info(`📗 收到 ${bookCount} 个订单簿快照`);
+                }
+                for (const msg of parsed) {
+                    if (msg.event_type === 'book' && msg.asset_id) {
+                        this.updateOrderBook(msg.asset_id, msg.asks || [], msg.bids || []);
+                    }
                 }
                 return;
             }
             
-            for (const msg of messages) {
-                // 处理订单簿快照
-                if (msg.event_type === 'book' && msg.asset_id) {
-                    this.updateOrderBook(msg.asset_id, msg.asks || [], msg.bids || []);
-                    if (this.debugMode && this.orderBooks.size <= 8) {
-                        Logger.info(`   📗 收到订单簿: ${msg.asset_id.slice(0, 20)}... asks=${(msg.asks || []).length}`);
-                    }
-                }
-                
-                // 处理价格更新
-                if (msg.event_type === 'price_change' && msg.asset_id) {
-                    // 增量更新
-                    const current = this.orderBooks.get(msg.asset_id);
-                    if (current && msg.price && msg.size) {
-                        if (msg.side === 'sell') {
-                            current.bestAsk = parseFloat(msg.price);
-                            current.bestAskSize = parseFloat(msg.size);
-                        } else if (msg.side === 'buy') {
-                            current.bestBid = parseFloat(msg.price);
-                            current.bestBidSize = parseFloat(msg.size);
+            // 处理对象消息（价格变化）
+            if (parsed.price_changes && Array.isArray(parsed.price_changes)) {
+                for (const change of parsed.price_changes) {
+                    const current = this.orderBooks.get(change.asset_id);
+                    if (current && change.price && change.size) {
+                        if (change.side === 'SELL') {
+                            current.bestAsk = parseFloat(change.price);
+                            current.bestAskSize = parseFloat(change.size);
+                        } else if (change.side === 'BUY') {
+                            current.bestBid = parseFloat(change.price);
+                            current.bestBidSize = parseFloat(change.size);
                         }
                         current.timestamp = Date.now();
-                        
-                        if (this.onUpdateCallback) {
-                            this.onUpdateCallback(msg.asset_id, current);
-                        }
                     }
                 }
             }
@@ -257,12 +245,30 @@ class OrderBookManager {
     getOrderBook(tokenId: string): OrderBookData | null {
         const data = this.orderBooks.get(tokenId);
         
+        if (!data) return null;
+        
         // 检查数据是否过期（超过 10 秒认为过期）
-        if (data && Date.now() - data.timestamp > 10000) {
+        if (Date.now() - data.timestamp > 10000) {
             return null;
         }
         
-        return data || null;
+        return data;
+    }
+    
+    /**
+     * 检查是否有新鲜数据（用于启动时等待）
+     */
+    hasFreshData(): boolean {
+        if (this.orderBooks.size === 0) return false;
+        
+        const now = Date.now();
+        for (const data of this.orderBooks.values()) {
+            // 如果有任何数据在最近 5 秒内更新过
+            if (now - data.timestamp < 5000) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**

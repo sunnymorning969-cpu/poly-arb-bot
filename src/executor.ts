@@ -19,9 +19,9 @@ let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
 let wallet: ethers.Wallet | null = null;
 
-// 下单冷却（防止同一市场频繁下单）
-const tradeCooldowns = new Map<string, number>();  // conditionId -> lastTradeTime
-const TRADE_COOLDOWN_MS = 30000;  // 同一市场 30 秒冷却
+// 记录上次下单的价格（同一价格不重复下单）
+const lastTradePrices = new Map<string, { upPrice: number; downPrice: number; timestamp: number }>();
+const PRICE_CHANGE_THRESHOLD = 0.005; // 价格变化超过 0.5% 才重新下单
 
 // Polygon 合约地址
 const CONTRACTS = {
@@ -356,13 +356,35 @@ const executeBuy = async (
 };
 
 /**
- * 检查是否在冷却中
+ * 检查是否是重复机会（同一价格不重复下单）
  */
-export const isOnCooldown = (conditionId: string): boolean => {
-    const lastTrade = tradeCooldowns.get(conditionId);
-    if (!lastTrade) return false;
-    return Date.now() - lastTrade < TRADE_COOLDOWN_MS;
+export const isDuplicateOpportunity = (conditionId: string, upPrice: number, downPrice: number): boolean => {
+    const last = lastTradePrices.get(conditionId);
+    if (!last) return false;
+    
+    // 5分钟后清除记录，允许重新下单
+    if (Date.now() - last.timestamp > 5 * 60 * 1000) {
+        lastTradePrices.delete(conditionId);
+        return false;
+    }
+    
+    // 检查价格是否有显著变化
+    const upChange = Math.abs(upPrice - last.upPrice) / Math.max(last.upPrice, 0.01);
+    const downChange = Math.abs(downPrice - last.downPrice) / Math.max(last.downPrice, 0.01);
+    
+    // 如果价格没有显著变化，认为是重复机会
+    return upChange < PRICE_CHANGE_THRESHOLD && downChange < PRICE_CHANGE_THRESHOLD;
 };
+
+/**
+ * 记录下单价格
+ */
+export const recordTradePrice = (conditionId: string, upPrice: number, downPrice: number): void => {
+    lastTradePrices.set(conditionId, { upPrice, downPrice, timestamp: Date.now() });
+};
+
+// 兼容旧接口
+export const isOnCooldown = (_conditionId: string): boolean => false;
 
 /**
  * 智能套利执行 - 根据深度和仓位动态下单
@@ -377,8 +399,8 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
-    // 检查冷却
-    if (isOnCooldown(opportunity.conditionId)) {
+    // 检查是否重复机会（同一价格不重复下单）
+    if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
         return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
     
@@ -485,9 +507,9 @@ export const executeArbitrage = async (
     const minShares = Math.min(upResult.filled, downResult.filled);
     const expectedProfit = minShares * (1 - opportunity.combinedCost);
     
-    // 设置冷却
+    // 记录下单价格（防止重复下单）
     if (upResult.success || downResult.success) {
-        tradeCooldowns.set(opportunity.conditionId, Date.now());
+        recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
     }
     
     return {
