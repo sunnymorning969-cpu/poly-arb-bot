@@ -123,18 +123,49 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         
         // 找到有 Up/Down tokens 的 market
         for (const market of markets) {
-            Logger.info(`   🔍 market: outcomes=${JSON.stringify(market.outcomes)}, clobTokenIds=${market.clobTokenIds?.length}`);
+            // outcomes 和 clobTokenIds 可能是字符串，需要解析
+            let outcomes = market.outcomes;
+            let clobTokenIds = market.clobTokenIds;
+            let outcomePrices = market.outcomePrices;
             
-            if (market.outcomes && market.outcomes.length === 2) {
-                const outcomes = market.outcomes.map((o: string) => o.toLowerCase());
-                if (outcomes.includes('up') && outcomes.includes('down')) {
+            // 调试：打印原始类型
+            Logger.info(`   🔍 原始: outcomes type=${typeof outcomes}, clobTokenIds type=${typeof clobTokenIds}`);
+            
+            // 如果是字符串，解析成数组
+            if (typeof outcomes === 'string') {
+                try { 
+                    outcomes = JSON.parse(outcomes); 
+                    Logger.info(`   ✅ outcomes 解析成功: ${JSON.stringify(outcomes)}`);
+                } catch (e: any) {
+                    Logger.error(`   ❌ outcomes 解析失败: ${e.message}`);
+                }
+            }
+            if (typeof clobTokenIds === 'string') {
+                try { 
+                    clobTokenIds = JSON.parse(clobTokenIds); 
+                    Logger.info(`   ✅ clobTokenIds 解析成功, 长度: ${clobTokenIds?.length}`);
+                } catch (e: any) {
+                    Logger.error(`   ❌ clobTokenIds 解析失败: ${e.message}`);
+                }
+            }
+            if (typeof outcomePrices === 'string') {
+                try { 
+                    outcomePrices = JSON.parse(outcomePrices); 
+                } catch {}
+            }
+            
+            Logger.info(`   🔍 解析后: outcomes=${JSON.stringify(outcomes)}, isArray=${Array.isArray(outcomes)}, clobTokenIds长度=${Array.isArray(clobTokenIds) ? clobTokenIds.length : 'NOT_ARRAY'}`);
+            
+            if (outcomes && Array.isArray(outcomes) && outcomes.length === 2) {
+                const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
+                if (outcomeNames.includes('up') && outcomeNames.includes('down')) {
                     // 构建 tokens 数组
                     const tokens = [];
-                    for (let i = 0; i < market.outcomes.length; i++) {
+                    for (let i = 0; i < outcomes.length; i++) {
                         tokens.push({
-                            token_id: market.clobTokenIds?.[i] || '',
-                            outcome: market.outcomes[i],
-                            price: market.outcomePrices?.[i] ? parseFloat(market.outcomePrices[i]) : 0.5,
+                            token_id: clobTokenIds?.[i] || '',
+                            outcome: outcomes[i],
+                            price: outcomePrices?.[i] ? parseFloat(outcomePrices[i]) : 0.5,
                         });
                     }
                     
