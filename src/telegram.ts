@@ -299,7 +299,7 @@ ${profitEmoji} <b>总盈亏: ${isProfit ? '+' : ''}$${stats.totalProfit.toFixed(
 
 /**
  * 发送持仓汇报（每2分钟）
- * 显示各事件的总持仓情况和预期盈亏
+ * 按时间组（15min/1hr）显示跨池套利效果
  */
 export const notifyPositionReport = async (positions: Array<{
     slug: string;
@@ -320,59 +320,95 @@ export const notifyPositionReport = async (positions: Array<{
         return;
     }
     
-    // 计算总体统计
-    let totalUpShares = 0;
-    let totalDownShares = 0;
-    let totalCost = 0;
-    
-    const positionLines: string[] = [];
+    // 按时间组分组（跨池套利的核心视角）
+    const groups: Map<string, {
+        positions: typeof positions;
+        totalUp: number;
+        totalDown: number;
+        totalCost: number;
+        endDate: string;
+    }> = new Map();
     
     for (const pos of positions) {
-        const cost = pos.upCost + pos.downCost;
-        const minShares = Math.min(pos.upShares, pos.downShares);
-        const expectedProfit = minShares - cost;
-        const profitPercent = cost > 0 ? (expectedProfit / cost) * 100 : 0;
-        const imbalance = pos.upShares - pos.downShares;
+        // 判断时间组
+        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+        const timeGroup = is15min ? '15min' : '1hr';
         
-        totalUpShares += pos.upShares;
-        totalDownShares += pos.downShares;
-        totalCost += cost;
+        if (!groups.has(timeGroup)) {
+            groups.set(timeGroup, {
+                positions: [],
+                totalUp: 0,
+                totalDown: 0,
+                totalCost: 0,
+                endDate: pos.endDate,
+            });
+        }
+        
+        const group = groups.get(timeGroup)!;
+        group.positions.push(pos);
+        group.totalUp += pos.upShares;
+        group.totalDown += pos.downShares;
+        group.totalCost += pos.upCost + pos.downCost;
+    }
+    
+    // 构建消息
+    const groupLines: string[] = [];
+    let grandTotalUp = 0;
+    let grandTotalDown = 0;
+    let grandTotalCost = 0;
+    
+    for (const [timeGroup, group] of groups) {
+        const minShares = Math.min(group.totalUp, group.totalDown);
+        const profit = minShares - group.totalCost;
+        const profitPercent = group.totalCost > 0 ? (profit / group.totalCost) * 100 : 0;
+        const profitEmoji = profit >= 0 ? '✅' : '❌';
+        const balanceIcon = Math.abs(group.totalUp - group.totalDown) < 10 ? '⚖️' : 
+                          (group.totalUp > group.totalDown ? '⬆️' : '⬇️');
         
         // 格式化结束时间
-        const endTime = new Date(pos.endDate);
+        const endTime = new Date(group.endDate);
         const timeStr = endTime.toLocaleTimeString('zh-CN', { 
             hour: '2-digit', 
             minute: '2-digit',
             timeZone: 'Asia/Shanghai'
         });
         
-        // 简短显示每个仓位
-        const profitEmoji = expectedProfit >= 0 ? '✅' : '❌';
-        const balanceIcon = Math.abs(imbalance) < 1 ? '⚖️' : (imbalance > 0 ? '⬆️' : '⬇️');
+        // 显示组内各市场明细
+        const details = group.positions.map(pos => {
+            const isBtc = pos.slug.includes('btc') || pos.slug.includes('bitcoin');
+            const asset = isBtc ? 'BTC' : 'ETH';
+            const upMore = pos.upShares > pos.downShares;
+            return `${asset}: U${pos.upShares.toFixed(0)}${upMore ? '↑' : ''} D${pos.downShares.toFixed(0)}${!upMore ? '↑' : ''}`;
+        }).join(' | ');
         
-        positionLines.push(
-            `${balanceIcon} <b>${pos.slug.slice(0, 25)}</b>\n` +
-            `   U:${pos.upShares.toFixed(1)} D:${pos.downShares.toFixed(1)} | 成本:$${cost.toFixed(2)} | ${profitEmoji}$${expectedProfit.toFixed(2)} (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(1)}%) | 截止:${timeStr}`
+        groupLines.push(
+            `${balanceIcon} <b>${timeGroup === '15min' ? '⏱️15分钟组' : '⏰1小时组'}</b> (截止${timeStr})\n` +
+            `   ${details}\n` +
+            `   🔀跨池合计: U${group.totalUp.toFixed(0)} + D${group.totalDown.toFixed(0)} = ${minShares.toFixed(0)}对\n` +
+            `   💰成本: $${group.totalCost.toFixed(2)} | ${profitEmoji}利润: $${profit.toFixed(2)} (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(1)}%)`
         );
+        
+        grandTotalUp += group.totalUp;
+        grandTotalDown += group.totalDown;
+        grandTotalCost += group.totalCost;
     }
     
     // 计算总预期利润
-    const totalMinShares = Math.min(totalUpShares, totalDownShares);
-    const totalExpectedProfit = totalMinShares - totalCost;
-    const totalProfitPercent = totalCost > 0 ? (totalExpectedProfit / totalCost) * 100 : 0;
-    const totalProfitEmoji = totalExpectedProfit >= 0 ? '📈' : '📉';
+    const grandMinShares = Math.min(grandTotalUp, grandTotalDown);
+    const grandProfit = grandMinShares - grandTotalCost;
+    const grandProfitPercent = grandTotalCost > 0 ? (grandProfit / grandTotalCost) * 100 : 0;
+    const grandProfitEmoji = grandProfit >= 0 ? '📈' : '📉';
     
     const message = `
 📋 <b>持仓汇报</b> (${new Date().toLocaleTimeString('zh-CN')})
 
-${positionLines.join('\n\n')}
+${groupLines.join('\n\n')}
 
 ━━━━━━━━━━━━━━━
-<b>📊 汇总:</b>
-   • 活跃仓位: ${positions.length} 个
-   • 总 Up: ${totalUpShares.toFixed(1)} | 总 Down: ${totalDownShares.toFixed(1)}
-   • 总成本: $${totalCost.toFixed(2)}
-   • ${totalProfitEmoji} <b>预期盈亏: ${totalExpectedProfit >= 0 ? '+' : ''}$${totalExpectedProfit.toFixed(2)} (${totalProfitPercent >= 0 ? '+' : ''}${totalProfitPercent.toFixed(1)}%)</b>
+<b>📊 总计:</b>
+   • 总 Up: ${grandTotalUp.toFixed(0)} | 总 Down: ${grandTotalDown.toFixed(0)}
+   • 总成本: $${grandTotalCost.toFixed(2)}
+   • ${grandProfitEmoji} <b>预期盈亏: ${grandProfit >= 0 ? '+' : ''}$${grandProfit.toFixed(2)} (${grandProfitPercent >= 0 ? '+' : ''}${grandProfitPercent.toFixed(1)}%)</b>
 
 ${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : ''}
 `.trim();
@@ -425,6 +461,139 @@ ${profitEmoji} <b>事件结束总结</b>
     await sendTelegramMessage(message, true);  // 高优先级
 };
 
+/**
+ * 发送批量结算通知（合并同时结算的多个事件）
+ * 避免消息顺序混乱
+ */
+export const notifyBatchSettlement = async (
+    results: Array<SettlementResult>,
+    overallStats: {
+        totalSettled: number;
+        totalProfit: number;
+        winCount: number;
+        lossCount: number;
+        winRate: number;
+    }
+): Promise<void> => {
+    if (results.length === 0) return;
+    
+    // 按时间组分组
+    const groups: Map<string, SettlementResult[]> = new Map();
+    for (const result of results) {
+        const is15min = result.position.slug.includes('15m') || result.position.slug.includes('15min');
+        const timeGroup = is15min ? '15min' : '1hr';
+        if (!groups.has(timeGroup)) {
+            groups.set(timeGroup, []);
+        }
+        groups.get(timeGroup)!.push(result);
+    }
+    
+    // 构建消息
+    const groupLines: string[] = [];
+    let batchTotalCost = 0;
+    let batchTotalPayout = 0;
+    let batchTotalProfit = 0;
+    
+    for (const [timeGroup, groupResults] of groups) {
+        const outcomeEmoji = groupResults[0].outcome === 'up' ? '⬆️' : '⬇️';
+        const groupIcon = timeGroup === '15min' ? '⏱️' : '⏰';
+        
+        let groupCost = 0;
+        let groupPayout = 0;
+        let groupProfit = 0;
+        
+        const details: string[] = [];
+        for (const r of groupResults) {
+            const isBtc = r.position.slug.includes('btc') || r.position.slug.includes('bitcoin');
+            const asset = isBtc ? 'BTC' : 'ETH';
+            const profitEmoji = r.profit >= 0 ? '✅' : '❌';
+            details.push(`${asset}: ${profitEmoji}$${r.profit.toFixed(2)}`);
+            
+            groupCost += r.totalCost;
+            groupPayout += r.payout;
+            groupProfit += r.profit;
+        }
+        
+        batchTotalCost += groupCost;
+        batchTotalPayout += groupPayout;
+        batchTotalProfit += groupProfit;
+        
+        const groupProfitEmoji = groupProfit >= 0 ? '✅' : '❌';
+        const groupProfitPercent = groupCost > 0 ? (groupProfit / groupCost) * 100 : 0;
+        
+        groupLines.push(
+            `${groupIcon} <b>${timeGroup === '15min' ? '15分钟组' : '1小时组'}</b> ${outcomeEmoji}${groupResults[0].outcome.toUpperCase()}获胜\n` +
+            `   ${details.join(' | ')}\n` +
+            `   💰 组合计: 成本$${groupCost.toFixed(2)} → 收回$${groupPayout.toFixed(2)} | ${groupProfitEmoji}${groupProfit >= 0 ? '+' : ''}$${groupProfit.toFixed(2)} (${groupProfitPercent >= 0 ? '+' : ''}${groupProfitPercent.toFixed(1)}%)`
+        );
+    }
+    
+    const batchProfitEmoji = batchTotalProfit >= 0 ? '🎉' : '😢';
+    const batchProfitPercent = batchTotalCost > 0 ? (batchTotalProfit / batchTotalCost) * 100 : 0;
+    const overallProfitEmoji = overallStats.totalProfit >= 0 ? '📈' : '📉';
+    
+    const message = `
+${batchProfitEmoji} <b>事件结算通知</b> (${results.length}个事件)
+
+${groupLines.join('\n\n')}
+
+━━━━━━━━━━━━━━━
+<b>📊 本批次合计:</b>
+   • 成本: $${batchTotalCost.toFixed(2)} → 收回: $${batchTotalPayout.toFixed(2)}
+   • 盈亏: ${batchTotalProfit >= 0 ? '+' : ''}$${batchTotalProfit.toFixed(2)} (${batchProfitPercent >= 0 ? '+' : ''}${batchProfitPercent.toFixed(1)}%)
+
+<b>📊 累计统计:</b>
+   • 已结算: ${overallStats.totalSettled} 个事件
+   • 胜率: ${overallStats.winRate.toFixed(1)}% (${overallStats.winCount}胜/${overallStats.lossCount}负)
+   • ${overallProfitEmoji} <b>累计盈亏: ${overallStats.totalProfit >= 0 ? '+' : ''}$${overallStats.totalProfit.toFixed(2)}</b>
+
+${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : ''}
+`.trim();
+
+    await sendTelegramMessage(message, true);  // 高优先级
+};
+
+/**
+ * 发送运行统计（每10分钟）
+ * 显示自启动以来的累计盈亏
+ */
+export const notifyRunningStats = async (stats: {
+    runtime: number;           // 运行时间（分钟）
+    totalSettled: number;      // 已结算事件数
+    totalProfit: number;       // 累计盈亏
+    winCount: number;          // 盈利次数
+    lossCount: number;         // 亏损次数
+    winRate: number;           // 胜率
+    activePositions: number;   // 活跃仓位数
+    pendingProfit: number;     // 待结算预期利润
+}): Promise<void> => {
+    const profitEmoji = stats.totalProfit >= 0 ? '📈' : '📉';
+    const pendingEmoji = stats.pendingProfit >= 0 ? '✅' : '❌';
+    
+    const hours = Math.floor(stats.runtime / 60);
+    const mins = stats.runtime % 60;
+    const runtimeStr = hours > 0 ? `${hours}小时${mins}分钟` : `${mins}分钟`;
+    
+    const message = `
+📊 <b>运行统计</b> (${new Date().toLocaleTimeString('zh-CN')})
+
+⏱️ <b>运行时间:</b> ${runtimeStr}
+
+💰 <b>已结算:</b>
+   • 事件数: ${stats.totalSettled}
+   • 胜率: ${stats.winRate.toFixed(1)}% (${stats.winCount}胜/${stats.lossCount}负)
+   • ${profitEmoji} <b>累计盈亏: ${stats.totalProfit >= 0 ? '+' : ''}$${stats.totalProfit.toFixed(2)}</b>
+
+📋 <b>待结算:</b>
+   • 活跃仓位: ${stats.activePositions} 个
+   • ${pendingEmoji} 预期利润: ${stats.pendingProfit >= 0 ? '+' : ''}$${stats.pendingProfit.toFixed(2)}
+
+${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : '🔴 <i>实盘模式</i>'}
+`.trim();
+
+    await sendTelegramMessage(message);
+};
+
 export default {
     sendTelegramMessage,
     notifyArbitrageFound,
@@ -435,6 +604,8 @@ export default {
     notifyOverallStats,
     notifyPositionReport,
     notifyEventSummary,
+    notifyBatchSettlement,
+    notifyRunningStats,
 };
 
 

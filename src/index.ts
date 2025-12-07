@@ -11,7 +11,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
-import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats, notifyPositionReport, notifyEventSummary } from './telegram';
+import { notifyBotStarted, notifyBatchSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
 
@@ -224,26 +224,10 @@ const mainLoop = async () => {
     Logger.success('📊 WebSocket 数据就绪，开始监控...');
     Logger.divider();
     
-    // 注册结算回调 - 事件结束时发送通知和总结
+    // 结算回调只打印日志，不发送 Telegram（改为批量发送）
     onSettlement(async (result: SettlementResult) => {
         const emoji = result.profit >= 0 ? '🎉' : '😢';
         Logger.arbitrage(`${emoji} 事件结算: ${result.position.slug.slice(0, 30)} | ${result.outcome.toUpperCase()} 获胜 | 盈亏: $${result.profit.toFixed(2)}`);
-        
-        // 获取总体统计
-        const overallStats = getOverallStats();
-        
-        // 发送事件结束总结（包含本次盈亏和累计统计）
-        await notifyEventSummary(
-            result.position.title,
-            {
-                outcome: result.outcome,
-                profit: result.profit,
-                profitPercent: result.profitPercent,
-                totalCost: result.totalCost,
-                payout: result.payout,
-            },
-            overallStats
-        );
     });
     
     // 发送 Telegram 启动通知
@@ -279,21 +263,12 @@ const mainLoop = async () => {
                             try {
                                 stats.tradesExecuted++;
                                 const result = await executeArbitrage(opp, 0);
-                                
-                                // 异步发送通知（不阻塞，不等待）
-                                notifyTradeExecuted(opp, result).catch(() => {});
-                                
                                 return { opp, result };
                             } catch (err) {
                                 Logger.error(`交易执行错误: ${err}`);
                                 return { opp, result: { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 } };
                             }
                         });
-                        
-                        // 异步发送通知（不阻塞，不等待）
-                        if (selected.length > 0) {
-                            notifyArbitrageFound(selected[0]).catch(() => {});
-                        }
                         
                         // 带超时的等待（最多 10 秒）
                         const timeoutPromise = new Promise<never>((_, reject) => 
@@ -336,20 +311,42 @@ const mainLoop = async () => {
             
             // 每15秒检查：结算到期仓位 + 事件切换
             if (now - lastPriceLog >= 15000) {
-                await checkAndSettleExpired();  // 异步获取真实结果
+                const settledResults = await checkAndSettleExpired();  // 异步获取真实结果
+                
+                // 如果有结算结果，发送批量通知
+                if (settledResults.length > 0) {
+                    const overallStats = getOverallStats();
+                    await notifyBatchSettlement(settledResults, overallStats);
+                }
+                
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
             }
             
-            // 每2分钟发送一次持仓汇报到 Telegram
-            if (now - lastPositionReport >= 2 * 60 * 1000) {
-                // 先检查结算，确保不发送已结算的仓位
-                await checkAndSettleExpired();
-                const allPositions = getAllPositions();
-                // 只有还有活跃仓位时才发送汇报
-                if (allPositions.length > 0) {
-                    await notifyPositionReport(allPositions);
+            // 每10分钟发送一次累计盈亏统计到 Telegram
+            if (now - lastPositionReport >= 10 * 60 * 1000) {
+                // 先检查结算
+                const moreSettled = await checkAndSettleExpired();
+                if (moreSettled.length > 0) {
+                    const overallStats = getOverallStats();
+                    await notifyBatchSettlement(moreSettled, overallStats);
                 }
+                
+                // 发送运行统计
+                const overallStats = getOverallStats();
+                const posStats = getPositionStats();
+                const runtime = Math.floor((Date.now() - stats.startTime.getTime()) / 1000 / 60);
+                await notifyRunningStats({
+                    runtime,
+                    totalSettled: overallStats.totalSettled,
+                    totalProfit: overallStats.totalProfit,
+                    winCount: overallStats.winCount,
+                    lossCount: overallStats.lossCount,
+                    winRate: overallStats.winRate,
+                    activePositions: posStats.totalPositions,
+                    pendingProfit: posStats.expectedProfit,
+                });
+                
                 lastPositionReport = now;
             }
             

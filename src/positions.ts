@@ -537,8 +537,8 @@ export const settlePosition = (pos: Position, outcome: 'up' | 'down'): Settlemen
 /**
  * 检查并结算已到期的仓位
  * 
- * 实盘模式：从 API 获取真实结算结果
- * 模拟模式：同一时间组的 BTC/ETH 使用相同随机结果（因为高度相关）
+ * 无论模拟模式还是实盘模式，都从 API 获取真实结算结果
+ * 这样才能准确评估策略效果
  */
 export const checkAndSettleExpired = async (): Promise<SettlementResult[]> => {
     const now = Date.now();
@@ -557,8 +557,8 @@ export const checkAndSettleExpired = async (): Promise<SettlementResult[]> => {
             continue;
         }
         
-        // 事件已结束（加 1 分钟缓冲，确保 API 已更新结果）
-        const bufferMs = 1 * 60 * 1000;  // 1 分钟
+        // 事件已结束（加 2 分钟缓冲，确保 API 已更新结果）
+        const bufferMs = 2 * 60 * 1000;  // 2 分钟
         if (endTime + bufferMs < now) {
             Logger.info(`⏰ 事件已结束: ${pos.slug} (结束于 ${new Date(endTime).toLocaleString()})`);
             expiredPositions.push({ conditionId, pos, endTime });
@@ -569,53 +569,24 @@ export const checkAndSettleExpired = async (): Promise<SettlementResult[]> => {
         return settled;
     }
     
-    // ========== 实盘模式：获取真实结果 ==========
-    if (!CONFIG.SIMULATION_MODE) {
-        for (const { conditionId, pos } of expiredPositions) {
-            // 从 API 获取真实结果
-            const realOutcome = await fetchRealOutcome(pos.slug);
-            
-            if (realOutcome) {
-                const result = settlePosition(pos, realOutcome);
-                settled.push(result);
-                
-                // 从内存和存储中删除仓位
-                positions.delete(conditionId);
-                deleteFromStorage(conditionId);
-            } else {
-                Logger.warning(`⚠️ 无法获取 ${pos.slug} 的真实结果，延迟结算`);
-                // 不删除，下次再尝试
-            }
-        }
-        return settled;
-    }
+    // ========== 从 API 获取真实结果（无论模拟还是实盘） ==========
+    const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
     
-    // ========== 模拟模式：同组使用相同随机结果 ==========
-    // 按时间组分组
-    const expiredByTimeGroup: Map<string, Array<{ conditionId: string; pos: Position }>> = new Map();
-    
-    for (const { conditionId, pos, endTime } of expiredPositions) {
-        const timeGroup = getTimeGroup(pos.slug);
-        const groupKey = `${timeGroup}-${endTime}`;
+    for (const { conditionId, pos } of expiredPositions) {
+        // 从 API 获取真实结果
+        const realOutcome = await fetchRealOutcome(pos.slug);
         
-        if (!expiredByTimeGroup.has(groupKey)) {
-            expiredByTimeGroup.set(groupKey, []);
-        }
-        expiredByTimeGroup.get(groupKey)!.push({ conditionId, pos });
-    }
-    
-    // 按组结算
-    for (const [_groupKey, expiredList] of expiredByTimeGroup) {
-        // 同一时间组的 BTC/ETH 使用相同结果（因为高度相关）
-        const sharedOutcome: 'up' | 'down' = Math.random() > 0.5 ? 'up' : 'down';
-        Logger.info(`🎲 [模拟] 随机结果: ${sharedOutcome.toUpperCase()}`);
-        
-        for (const { conditionId, pos } of expiredList) {
-            const result = settlePosition(pos, sharedOutcome);
+        if (realOutcome) {
+            Logger.info(`${modeTag} 📊 ${pos.slug.slice(0, 25)} → ${realOutcome.toUpperCase()} 获胜`);
+            const result = settlePosition(pos, realOutcome);
             settled.push(result);
             
+            // 从内存和存储中删除仓位
             positions.delete(conditionId);
             deleteFromStorage(conditionId);
+        } else {
+            Logger.warning(`⚠️ 无法获取 ${pos.slug} 的真实结果，延迟结算`);
+            // 不删除，下次再尝试
         }
     }
     
