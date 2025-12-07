@@ -26,8 +26,8 @@ export const CONFIG = {
     GAMMA_API: 'https://gamma-api.polymarket.com',
     
     // Telegram 配置
-    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
-    TELEGRAM_GROUP_ID: process.env.TELEGRAM_GROUP_ID || '',
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648',
+    TELEGRAM_GROUP_ID: process.env.TELEGRAM_GROUP_ID || '@rickyhutest',
     TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED !== 'false',  // 默认开启
     
     // 套利配置

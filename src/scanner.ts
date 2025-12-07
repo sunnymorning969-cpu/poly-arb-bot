@@ -89,6 +89,30 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
 
         const markets: PolymarketMarket[] = response.data;
         
+        // 调试：打印前 3 个市场的结构
+        Logger.info(`📋 API 返回 ${markets.length} 个市场`);
+        if (markets.length > 0) {
+            Logger.info('🔍 示例市场结构:');
+            for (const m of markets.slice(0, 3)) {
+                Logger.info(`   slug: ${m.slug || 'undefined'}`);
+                Logger.info(`   question: ${(m.question || 'undefined').slice(0, 60)}`);
+                Logger.info(`   tokens: ${m.tokens?.length || 0} 个`);
+                Logger.info('   ---');
+            }
+        }
+        
+        // 查找包含 btc/eth/bitcoin/ethereum 的市场
+        const cryptoRelated = markets.filter(m => {
+            const s = JSON.stringify(m).toLowerCase();
+            return s.includes('btc') || s.includes('eth') || s.includes('bitcoin') || s.includes('ethereum');
+        });
+        Logger.info(`🔍 包含 BTC/ETH 关键词的市场: ${cryptoRelated.length} 个`);
+        if (cryptoRelated.length > 0) {
+            for (const m of cryptoRelated.slice(0, 5)) {
+                Logger.info(`   - ${m.slug || m.question?.slice(0, 50) || 'unknown'}`);
+            }
+        }
+        
         // 过滤 BTC/ETH Up/Down 15分钟和1小时市场
         cachedMarkets = markets.filter(market => {
             const slug = (market.slug || '').toLowerCase();
