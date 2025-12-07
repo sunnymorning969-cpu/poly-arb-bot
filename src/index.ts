@@ -9,7 +9,7 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus } from './scanner';
+import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, getCurrentPrices } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
@@ -197,6 +197,7 @@ const mainLoop = async () => {
     let lastLogTime = Date.now();
     let scansSinceLog = 0;
     let lastStatsNotify = Date.now();
+    let lastPriceLog = Date.now();
     
     // 高速主循环
     while (true) {
@@ -267,6 +268,21 @@ const mainLoop = async () => {
                 
                 // 检查并结算已到期仓位
                 checkAndSettleExpired();
+            }
+            
+            // 每15秒打印一次市场价格
+            if (now - lastPriceLog >= 15000) {
+                const prices = getCurrentPrices();
+                if (prices.length > 0) {
+                    Logger.info('📊 当前市场价格:');
+                    for (const p of prices) {
+                        const upStr = p.upAsk !== null ? `$${p.upAsk.toFixed(3)}` : '无数据';
+                        const downStr = p.downAsk !== null ? `$${p.downAsk.toFixed(3)}` : '无数据';
+                        const combStr = p.combined !== null ? `$${p.combined.toFixed(3)}` : '-';
+                        Logger.info(`   ${p.market} | Up: ${upStr} | Down: ${downStr} | 合计: ${combStr}`);
+                    }
+                }
+                lastPriceLog = now;
             }
             
             // 每5分钟发送一次 Telegram 统计

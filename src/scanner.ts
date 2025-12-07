@@ -109,7 +109,6 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         
         const events = resp.data;
         if (!events || !Array.isArray(events) || events.length === 0) {
-            Logger.warning(`   ❌ ${slug} - 无 events 数据`);
             return null;
         }
         
@@ -117,7 +116,6 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         const markets = event.markets;
         
         if (!markets || !Array.isArray(markets) || markets.length === 0) {
-            Logger.warning(`   ❌ ${slug} - 无 markets 数据`);
             return null;
         }
         
@@ -128,33 +126,16 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
             let clobTokenIds = market.clobTokenIds;
             let outcomePrices = market.outcomePrices;
             
-            // 调试：打印原始类型
-            Logger.info(`   🔍 原始: outcomes type=${typeof outcomes}, clobTokenIds type=${typeof clobTokenIds}`);
-            
             // 如果是字符串，解析成数组
             if (typeof outcomes === 'string') {
-                try { 
-                    outcomes = JSON.parse(outcomes); 
-                    Logger.info(`   ✅ outcomes 解析成功: ${JSON.stringify(outcomes)}`);
-                } catch (e: any) {
-                    Logger.error(`   ❌ outcomes 解析失败: ${e.message}`);
-                }
+                try { outcomes = JSON.parse(outcomes); } catch {}
             }
             if (typeof clobTokenIds === 'string') {
-                try { 
-                    clobTokenIds = JSON.parse(clobTokenIds); 
-                    Logger.info(`   ✅ clobTokenIds 解析成功, 长度: ${clobTokenIds?.length}`);
-                } catch (e: any) {
-                    Logger.error(`   ❌ clobTokenIds 解析失败: ${e.message}`);
-                }
+                try { clobTokenIds = JSON.parse(clobTokenIds); } catch {}
             }
             if (typeof outcomePrices === 'string') {
-                try { 
-                    outcomePrices = JSON.parse(outcomePrices); 
-                } catch {}
+                try { outcomePrices = JSON.parse(outcomePrices); } catch {}
             }
-            
-            Logger.info(`   🔍 解析后: outcomes=${JSON.stringify(outcomes)}, isArray=${Array.isArray(outcomes)}, clobTokenIds长度=${Array.isArray(clobTokenIds) ? clobTokenIds.length : 'NOT_ARRAY'}`);
             
             if (outcomes && Array.isArray(outcomes) && outcomes.length === 2) {
                 const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
@@ -169,7 +150,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                         });
                     }
                     
-                    const result = {
+                    return {
                         condition_id: market.conditionId,
                         question: market.question || event.title,
                         slug: slug,
@@ -178,15 +159,11 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                         active: market.active !== false,
                         closed: market.closed === true,
                     };
-                    
-                    Logger.info(`   📍 ${slug}: closed=${result.closed}, tokens=${tokens.length}`);
-                    return result;
                 }
             }
         }
         
-        Logger.warning(`   ❌ ${slug} - 无 Up/Down outcomes`);
-        return null;
+        return null;  // 未找到 Up/Down 市场
     } catch (error: any) {
         Logger.error(`   ❌ ${slug} - 请求失败: ${error.message}`);
         return null;
@@ -205,29 +182,18 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
     }
     
     try {
-        Logger.info('🔄 刷新市场列表...');
-        
         // 根据当前时间生成 slug
         const slugs = generateMarketSlugs();
-        Logger.info(`📋 生成的 slug: ${slugs.join(', ')}`);
         
         // 并行获取所有市场
         const marketPromises = slugs.map(slug => fetchEventBySlug(slug));
         const results = await Promise.all(marketPromises);
         
         // 过滤有效且未关闭的市场
-        Logger.info(`📋 获取到 ${results.filter(r => r !== null).length} 个市场结果`);
-        
         cachedMarkets = results.filter((m): m is PolymarketMarket => {
             if (m === null) return false;
-            if (m.closed) {
-                Logger.warning(`   跳过已关闭: ${m.question}`);
-                return false;
-            }
-            if (m.tokens.length !== 2) {
-                Logger.warning(`   跳过 tokens 数量异常: ${m.question}, tokens=${m.tokens.length}`);
-                return false;
-            }
+            if (m.closed) return false;
+            if (m.tokens.length !== 2) return false;
             return true;
         });
         
@@ -242,7 +208,6 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
             if (upToken && downToken) {
                 marketTokenMap.set(market.condition_id, { market, upToken, downToken });
                 tokenIds.push(upToken.token_id, downToken.token_id);
-                Logger.info(`   ✅ ${market.question}`);
             }
         }
         
@@ -395,10 +360,36 @@ export const getWebSocketStatus = () => {
     };
 };
 
+/**
+ * 获取当前所有市场的实时价格（用于调试）
+ */
+export const getCurrentPrices = (): { market: string; upAsk: number | null; downAsk: number | null; combined: number | null }[] => {
+    const prices: { market: string; upAsk: number | null; downAsk: number | null; combined: number | null }[] = [];
+    
+    for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
+        const upBook = orderBookManager.getOrderBook(upToken.token_id);
+        const downBook = orderBookManager.getOrderBook(downToken.token_id);
+        
+        const upAsk = upBook?.bestAsk ?? null;
+        const downAsk = downBook?.bestAsk ?? null;
+        const combined = (upAsk !== null && downAsk !== null) ? upAsk + downAsk : null;
+        
+        prices.push({
+            market: market.question.slice(0, 40),
+            upAsk,
+            downAsk,
+            combined,
+        });
+    }
+    
+    return prices;
+};
+
 export default {
     fetchCryptoMarkets,
     initWebSocket,
     scanArbitrageOpportunities,
     printOpportunities,
     getWebSocketStatus,
+    getCurrentPrices,
 };

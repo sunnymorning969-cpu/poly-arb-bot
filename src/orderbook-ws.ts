@@ -40,6 +40,8 @@ class OrderBookManager {
     private reconnectDelay = 1000;
     private isConnected = false;
     private onUpdateCallback: ((tokenId: string, data: OrderBookData) => void) | null = null;
+    private debugMode = true;  // 调试模式
+    private msgCount = 0;
     
     private readonly WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
     
@@ -94,9 +96,20 @@ class OrderBookManager {
      */
     private handleMessage(data: string): void {
         try {
+            this.msgCount++;
+            
+            // 调试：打印前几条消息
+            if (this.debugMode && this.msgCount <= 5) {
+                Logger.info(`🔔 WS消息 #${this.msgCount}: ${data.slice(0, 200)}...`);
+            }
+            
             const messages: WSMessage[] = JSON.parse(data);
             
             if (!Array.isArray(messages)) {
+                // 可能是单个消息或错误响应
+                if (this.debugMode && this.msgCount <= 5) {
+                    Logger.warning(`   非数组消息，跳过`);
+                }
                 return;
             }
             
@@ -104,6 +117,9 @@ class OrderBookManager {
                 // 处理订单簿快照
                 if (msg.event_type === 'book' && msg.asset_id) {
                     this.updateOrderBook(msg.asset_id, msg.asks || [], msg.bids || []);
+                    if (this.debugMode && this.orderBooks.size <= 8) {
+                        Logger.info(`   📗 收到订单簿: ${msg.asset_id.slice(0, 20)}... asks=${(msg.asks || []).length}`);
+                    }
                 }
                 
                 // 处理价格更新
@@ -124,11 +140,6 @@ class OrderBookManager {
                             this.onUpdateCallback(msg.asset_id, current);
                         }
                     }
-                }
-                
-                // 处理 last_trade_price 消息
-                if (msg.event_type === 'last_trade_price' && msg.asset_id) {
-                    // 这个消息包含最新成交价，可以用来辅助判断
                 }
             }
         } catch (error) {
@@ -187,28 +198,26 @@ class OrderBookManager {
      * 订阅 token 的订单簿
      */
     subscribe(tokenIds: string[]): void {
+        // 添加到待订阅列表
+        tokenIds.forEach(id => this.subscribedTokens.add(id));
+        
         if (!this.ws || !this.isConnected) {
-            // 先保存，等连接成功后订阅
-            tokenIds.forEach(id => this.subscribedTokens.add(id));
+            Logger.info(`📝 保存 ${tokenIds.length} 个 token，等待连接后订阅`);
             return;
         }
         
-        for (const tokenId of tokenIds) {
-            if (this.subscribedTokens.has(tokenId)) {
-                continue;
-            }
-            
+        // 批量订阅所有 token（一条消息）
+        const newTokens = tokenIds.filter(id => !this.orderBooks.has(id));
+        if (newTokens.length > 0) {
             const subscribeMsg = {
                 auth: {},
                 type: 'market',
-                assets_ids: [tokenId],
+                assets_ids: newTokens,
             };
             
             this.ws.send(JSON.stringify(subscribeMsg));
-            this.subscribedTokens.add(tokenId);
+            Logger.info(`📡 发送订阅请求: ${newTokens.length} 个 token`);
         }
-        
-        Logger.info(`📡 已订阅 ${tokenIds.length} 个 token 的订单簿`);
     }
     
     /**
