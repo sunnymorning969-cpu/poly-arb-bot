@@ -109,6 +109,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         
         const events = resp.data;
         if (!events || !Array.isArray(events) || events.length === 0) {
+            Logger.warning(`   ❌ ${slug} - 无 events 数据`);
             return null;
         }
         
@@ -116,6 +117,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         const markets = event.markets;
         
         if (!markets || !Array.isArray(markets) || markets.length === 0) {
+            Logger.warning(`   ❌ ${slug} - 无 markets 数据`);
             return null;
         }
         
@@ -134,21 +136,26 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                         });
                     }
                     
-                    return {
+                    const result = {
                         condition_id: market.conditionId,
                         question: market.question || event.title,
                         slug: slug,
                         tokens,
-                        end_date_iso: market.endDate || event.endDate,
+                        end_date_iso: market.endDateIso || market.endDate || event.endDate,
                         active: market.active !== false,
                         closed: market.closed === true,
                     };
+                    
+                    Logger.info(`   📍 ${slug}: closed=${result.closed}, tokens=${tokens.length}`);
+                    return result;
                 }
             }
         }
         
+        Logger.warning(`   ❌ ${slug} - 无 Up/Down outcomes`);
         return null;
-    } catch (error) {
+    } catch (error: any) {
+        Logger.error(`   ❌ ${slug} - 请求失败: ${error.message}`);
         return null;
     }
 }
@@ -176,8 +183,19 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
         const results = await Promise.all(marketPromises);
         
         // 过滤有效且未关闭的市场
+        Logger.info(`📋 获取到 ${results.filter(r => r !== null).length} 个市场结果`);
+        
         cachedMarkets = results.filter((m): m is PolymarketMarket => {
-            return m !== null && !m.closed && m.tokens.length === 2;
+            if (m === null) return false;
+            if (m.closed) {
+                Logger.warning(`   跳过已关闭: ${m.question}`);
+                return false;
+            }
+            if (m.tokens.length !== 2) {
+                Logger.warning(`   跳过 tokens 数量异常: ${m.question}, tokens=${m.tokens.length}`);
+                return false;
+            }
+            return true;
         });
         
         // 构建 token 映射
