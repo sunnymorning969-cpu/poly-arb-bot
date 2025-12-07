@@ -89,21 +89,36 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
 
         const markets: PolymarketMarket[] = response.data;
         
-        // 过滤 BTC/ETH Up/Down 市场
+        // 固定扫描 BTC/ETH 的 15分钟 和 1小时 市场
         cachedMarkets = markets.filter(market => {
             const slug = (market.slug || '').toLowerCase();
             const question = (market.question || '').toLowerCase();
             
-            const isCrypto = (
-                slug.includes('btc-updown') ||
-                slug.includes('eth-updown') ||
-                slug.includes('bitcoin-up-or-down') ||
-                slug.includes('ethereum-up-or-down') ||
-                question.includes('bitcoin up or down') ||
-                question.includes('ethereum up or down')
-            );
-
-            if (!isCrypto) return false;
+            // 必须是 BTC 或 ETH
+            const isBTC = slug.includes('btc') || slug.includes('bitcoin') || 
+                          question.includes('btc') || question.includes('bitcoin');
+            const isETH = slug.includes('eth') || slug.includes('ethereum') || 
+                          question.includes('eth') || question.includes('ethereum');
+            
+            if (!isBTC && !isETH) return false;
+            
+            // 必须是 Up/Down 市场
+            const isUpDown = slug.includes('updown') || slug.includes('up-or-down') ||
+                             question.includes('up or down');
+            
+            if (!isUpDown) return false;
+            
+            // 必须是 15分钟 或 1小时 周期
+            const is15Min = slug.includes('15') || slug.includes('fifteen') ||
+                            question.includes('15') || question.includes('fifteen');
+            const is1Hour = slug.includes('1-hour') || slug.includes('1hour') || 
+                            slug.includes('hourly') || slug.includes('60') ||
+                            question.includes('1 hour') || question.includes('one hour') ||
+                            question.includes('hourly') || question.includes('60 min');
+            
+            if (!is15Min && !is1Hour) return false;
+            
+            // 必须有 Up 和 Down 两个选项
             if (!market.tokens || market.tokens.length !== 2) return false;
             
             const outcomes = market.tokens.map(t => t.outcome.toLowerCase());
@@ -124,7 +139,7 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
             }
         }
         
-        Logger.success(`📊 找到 ${cachedMarkets.length} 个加密货币 Up/Down 市场`);
+        Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH 15分钟&1小时 Up/Down 市场`);
         
         // 订阅这些 token 的 WebSocket
         orderBookManager.subscribe(tokenIds);
