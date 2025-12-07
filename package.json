@@ -4,6 +4,7 @@
   "description": "Polymarket 套利机器人 - 自动扫描并执行 Up/Down 市场套利",
   "main": "dist/index.js",
   "scripts": {
+    "setup": "ts-node src/setup.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",

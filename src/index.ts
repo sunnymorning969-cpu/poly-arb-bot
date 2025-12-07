@@ -10,7 +10,7 @@
 import CONFIG from './config';
 import Logger from './logger';
 import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus } from './scanner';
-import { initClient, getBalance, executeArbitrage } from './executor';
+import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
@@ -148,6 +148,14 @@ const mainLoop = async () => {
         return;
     }
     
+    // 检查并执行 USDC 授权
+    try {
+        await ensureApprovals();
+    } catch (error) {
+        Logger.warning(`授权检查失败: ${error}`);
+        // 不中断启动，可能只是 RPC 问题
+    }
+    
     // 初始化 WebSocket 订单簿
     try {
         await initWebSocket();
@@ -157,8 +165,9 @@ const mainLoop = async () => {
     }
     
     // 获取初始余额
-    const balance = await getBalance();
-    Logger.success(`💰 账户余额: $${balance.toFixed(2)}`);
+    const clobBalance = await getBalance();
+    const usdcBalance = await getUSDCBalance();
+    Logger.success(`💰 CLOB 余额: $${clobBalance.toFixed(2)} | 钱包 USDC.e: $${usdcBalance.toFixed(2)}`);
     Logger.divider();
     
     printConfig();

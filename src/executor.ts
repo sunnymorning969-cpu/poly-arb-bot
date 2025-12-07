@@ -21,14 +21,16 @@ let wallet: ethers.Wallet | null = null;
 
 // Polygon 合约地址
 const CONTRACTS = {
-    // USDC on Polygon
-    USDC: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-    // Polymarket CTF Exchange (需要授权 USDC)
-    CTF_EXCHANGE: '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C',
-    // Polymarket Neg Risk CTF Exchange
-    NEG_RISK_CTF_EXCHANGE: '0xC5d563A36AE78145C45a50134d48A1215220f80a',
-    // Polymarket Neg Risk Adapter
-    NEG_RISK_ADAPTER: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',
+    // USDC on Polygon (PoS Bridge - 旧版)
+    USDC_E: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+    // USDC on Polygon (Native - 新版)
+    USDC: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    
+    // Polymarket 核心合约
+    CTF_EXCHANGE: '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C',        // 主交易所
+    NEG_RISK_CTF_EXCHANGE: '0xC5d563A36AE78145C45a50134d48A1215220f80a', // 负风险交易所
+    NEG_RISK_ADAPTER: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',     // 负风险适配器
+    CONDITIONAL_TOKENS: '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045',   // 条件代币合约
 };
 
 // ERC20 ABI (只需要 approve 和 allowance)
@@ -68,32 +70,32 @@ const isGnosisSafe = async (address: string): Promise<boolean> => {
     }
 };
 
+
 /**
- * 检查 USDC 授权额度
+ * 检查指定 USDC 代币的授权
  */
-const checkAllowance = async (spender: string): Promise<BigNumber> => {
+const checkAllowanceForToken = async (tokenAddress: string, spender: string): Promise<BigNumber> => {
     try {
         const { provider, wallet } = getProviderAndWallet();
-        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, provider);
+        const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
         const ownerAddress = CONFIG.PROXY_WALLET || wallet.address;
-        return await usdc.allowance(ownerAddress, spender);
+        return await token.allowance(ownerAddress, spender);
     } catch (error) {
-        Logger.error(`检查授权失败: ${error}`);
         return BigNumber.from(0);
     }
 };
 
 /**
- * 授权 USDC 给指定合约
+ * 授权指定 USDC 代币给合约
  */
-const approveUSDC = async (spender: string, spenderName: string): Promise<boolean> => {
+const approveToken = async (tokenAddress: string, tokenName: string, spender: string, spenderName: string): Promise<boolean> => {
     try {
         const { wallet } = getProviderAndWallet();
-        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, wallet);
+        const token = new ethers.Contract(tokenAddress, ERC20_ABI, wallet);
         
-        Logger.info(`📝 正在授权 USDC 给 ${spenderName}...`);
+        Logger.info(`📝 授权 ${tokenName} 给 ${spenderName}...`);
         
-        const tx = await usdc.approve(spender, MAX_APPROVAL, {
+        const tx = await token.approve(spender, MAX_APPROVAL, {
             gasLimit: 100000,
         });
         
@@ -101,14 +103,19 @@ const approveUSDC = async (spender: string, spenderName: string): Promise<boolea
         const receipt = await tx.wait();
         
         if (receipt.status === 1) {
-            Logger.success(`✅ 授权成功: ${spenderName}`);
+            Logger.success(`✅ ${tokenName} → ${spenderName} 授权成功`);
             return true;
         } else {
-            Logger.error(`❌ 授权失败: ${spenderName}`);
+            Logger.error(`❌ ${tokenName} → ${spenderName} 授权失败`);
             return false;
         }
-    } catch (error) {
-        Logger.error(`授权交易失败: ${error}`);
+    } catch (error: any) {
+        // 如果是 gas 估算失败，可能是已经授权了
+        if (error.message?.includes('cannot estimate gas')) {
+            Logger.info(`⚠️ ${tokenName} → ${spenderName} 可能已授权`);
+            return true;
+        }
+        Logger.error(`授权交易失败: ${error.message || error}`);
         return false;
     }
 };
@@ -122,34 +129,63 @@ export const ensureApprovals = async (): Promise<boolean> => {
     // 最小授权阈值（1000 USDC = 1000 * 1e6）
     const MIN_ALLOWANCE = BigNumber.from(1000).mul(BigNumber.from(10).pow(6));
     
+    // 需要授权的合约列表
     const spenders = [
         { address: CONTRACTS.CTF_EXCHANGE, name: 'CTF Exchange' },
-        { address: CONTRACTS.NEG_RISK_CTF_EXCHANGE, name: 'Neg Risk CTF Exchange' },
+        { address: CONTRACTS.NEG_RISK_CTF_EXCHANGE, name: 'Neg Risk Exchange' },
         { address: CONTRACTS.NEG_RISK_ADAPTER, name: 'Neg Risk Adapter' },
+        { address: CONTRACTS.CONDITIONAL_TOKENS, name: 'Conditional Tokens' },
+    ];
+    
+    // USDC 代币列表 - USDC.e 是 Polymarket 主要使用的
+    const tokens = [
+        { address: CONTRACTS.USDC_E, name: 'USDC.e' },  // Polymarket 使用这个
+        // { address: CONTRACTS.USDC, name: 'USDC (Native)' },  // 暂时不需要
     ];
     
     let allApproved = true;
+    let needsApproval: Array<{ token: typeof tokens[0], spender: typeof spenders[0] }> = [];
     
-    for (const spender of spenders) {
-        const allowance = await checkAllowance(spender.address);
-        
-        if (allowance.lt(MIN_ALLOWANCE)) {
-            Logger.warning(`⚠️ ${spender.name} 授权不足，需要授权`);
-            
-            if (CONFIG.SIMULATION_MODE) {
-                Logger.warning(`[模拟模式] 跳过实际授权`);
-                continue;
+    // 先检查所有授权状态
+    Logger.info('📋 检查授权状态...');
+    for (const token of tokens) {
+        for (const spender of spenders) {
+            try {
+                const allowance = await checkAllowanceForToken(token.address, spender.address);
+                
+                if (allowance.lt(MIN_ALLOWANCE)) {
+                    needsApproval.push({ token, spender });
+                    Logger.warning(`   ⚠️ ${token.name} → ${spender.name}: 需要授权`);
+                } else {
+                    Logger.success(`   ✅ ${token.name} → ${spender.name}: 已授权`);
+                }
+            } catch (error) {
+                // 忽略检查错误，稍后尝试授权
+                needsApproval.push({ token, spender });
             }
-            
-            const success = await approveUSDC(spender.address, spender.name);
-            if (!success) {
-                allApproved = false;
-            }
-        } else {
-            Logger.success(`✅ ${spender.name} 已授权`);
         }
     }
     
+    // 执行需要的授权
+    if (needsApproval.length > 0) {
+        Logger.divider();
+        Logger.info(`📝 需要执行 ${needsApproval.length} 个授权...`);
+        
+        if (CONFIG.SIMULATION_MODE) {
+            Logger.warning(`[模拟模式] 跳过实际授权交易`);
+        } else {
+            for (const { token, spender } of needsApproval) {
+                const success = await approveToken(token.address, token.name, spender.address, spender.name);
+                if (!success) {
+                    allApproved = false;
+                }
+                // 等待一下避免 nonce 问题
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+    }
+    
+    Logger.divider();
     if (allApproved) {
         Logger.success('🔓 所有 USDC 授权已就绪');
     } else {
@@ -160,17 +196,19 @@ export const ensureApprovals = async (): Promise<boolean> => {
 };
 
 /**
- * 获取 USDC 余额
+ * 获取 USDC.e 余额（Bridged USDC - Polymarket 主要使用这个）
  */
 export const getUSDCBalance = async (): Promise<number> => {
     try {
         const { provider, wallet } = getProviderAndWallet();
-        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, provider);
         const ownerAddress = CONFIG.PROXY_WALLET || wallet.address;
-        const balance = await usdc.balanceOf(ownerAddress);
+        
+        // Polymarket 使用的是 USDC.e (Bridged)
+        const usdce = new ethers.Contract(CONTRACTS.USDC_E, ERC20_ABI, provider);
+        const balance = await usdce.balanceOf(ownerAddress);
         return parseFloat(ethers.utils.formatUnits(balance, 6));
     } catch (error) {
-        Logger.error(`获取 USDC 余额失败: ${error}`);
+        Logger.error(`获取 USDC.e 余额失败: ${error}`);
         return 0;
     }
 };
@@ -441,5 +479,7 @@ export const executeArbitrage = async (
 export default {
     initClient,
     getBalance,
+    getUSDCBalance,
+    ensureApprovals,
     executeArbitrage,
 };
