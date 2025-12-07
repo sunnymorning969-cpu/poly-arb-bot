@@ -123,6 +123,8 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
         
         // 找到有 Up/Down tokens 的 market
         for (const market of markets) {
+            Logger.info(`   🔍 market: outcomes=${JSON.stringify(market.outcomes)}, clobTokenIds=${market.clobTokenIds?.length}`);
+            
             if (market.outcomes && market.outcomes.length === 2) {
                 const outcomes = market.outcomes.map((o: string) => o.toLowerCase());
                 if (outcomes.includes('up') && outcomes.includes('down')) {
