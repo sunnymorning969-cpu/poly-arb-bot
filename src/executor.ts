@@ -8,7 +8,7 @@
  */
 
 import { ethers, BigNumber } from 'ethers';
-import { ClobClient, OrderType, Side } from '@polymarket/clob-client';
+import { ClobClient, OrderType, Side, AssetType } from '@polymarket/clob-client';
 import { SignatureType } from '@polymarket/order-utils';
 import CONFIG from './config';
 import Logger from './logger';
@@ -272,7 +272,7 @@ export const initClient = async (): Promise<ClobClient> => {
 export const getBalance = async (): Promise<number> => {
     try {
         const client = await initClient();
-        const balances = await client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
+        const balances = await client.getBalanceAllowance({ asset_type: AssetType.COLLATERAL });
         return parseFloat(balances.balance || '0') / 1e6;
     } catch (error) {
         return 0;
