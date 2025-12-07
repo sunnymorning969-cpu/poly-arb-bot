@@ -207,16 +207,36 @@ class OrderBookManager {
         }
         
         // 批量订阅所有 token（一条消息）
-        const newTokens = tokenIds.filter(id => !this.orderBooks.has(id));
-        if (newTokens.length > 0) {
-            const subscribeMsg = {
-                auth: {},
-                type: 'market',
-                assets_ids: newTokens,
-            };
-            
-            this.ws.send(JSON.stringify(subscribeMsg));
-            Logger.info(`📡 发送订阅请求: ${newTokens.length} 个 token`);
+        const subscribeMsg = {
+            auth: {},
+            type: 'market',
+            assets_ids: tokenIds,
+        };
+        
+        this.ws.send(JSON.stringify(subscribeMsg));
+        Logger.info(`📡 发送订阅请求: ${tokenIds.length} 个 token`);
+    }
+    
+    /**
+     * 清除不再需要的订单簿数据
+     */
+    clearStaleOrderBooks(activeTokenIds: string[]): void {
+        const activeSet = new Set(activeTokenIds);
+        const toRemove: string[] = [];
+        
+        for (const tokenId of this.orderBooks.keys()) {
+            if (!activeSet.has(tokenId)) {
+                toRemove.push(tokenId);
+            }
+        }
+        
+        for (const tokenId of toRemove) {
+            this.orderBooks.delete(tokenId);
+            this.subscribedTokens.delete(tokenId);
+        }
+        
+        if (toRemove.length > 0) {
+            Logger.info(`🧹 清除 ${toRemove.length} 个过期订单簿`);
         }
     }
     

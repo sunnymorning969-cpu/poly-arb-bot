@@ -246,11 +246,19 @@ export const checkAndSettleExpired = (): SettlementResult[] => {
     const settled: SettlementResult[] = [];
     
     for (const [conditionId, pos] of positions) {
+        // 解析结束时间
         const endTime = new Date(pos.endDate).getTime();
         
-        // 事件已结束（加 1 分钟缓冲）
-        if (endTime + 60000 < now) {
-            Logger.info(`⏰ 事件已结束: ${pos.slug}`);
+        // 检查日期是否有效
+        if (isNaN(endTime)) {
+            Logger.warning(`⚠️ 无效的 endDate: ${pos.endDate} for ${pos.slug}`);
+            continue;
+        }
+        
+        // 事件已结束（加 5 分钟缓冲，确保 API 已更新结果）
+        const bufferMs = 5 * 60 * 1000;  // 5 分钟
+        if (endTime + bufferMs < now) {
+            Logger.info(`⏰ 事件已结束: ${pos.slug} (结束于 ${new Date(endTime).toLocaleString()})`);
             
             // 结算仓位
             const result = settlePosition(pos);

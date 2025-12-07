@@ -213,8 +213,9 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
         
         Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH Up/Down 市场`);
         
-        // 订阅这些 token 的 WebSocket
+        // 清除旧的订单簿数据，订阅新的 token
         if (tokenIds.length > 0) {
+            orderBookManager.clearStaleOrderBooks(tokenIds);
             orderBookManager.subscribe(tokenIds);
         }
         

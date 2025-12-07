@@ -10,7 +10,7 @@
 import CONFIG from './config';
 import Logger from './logger';
 import { scanArbitrageOpportunities, printOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, getCurrentPrices } from './scanner';
-import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage } from './executor';
+import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isOnCooldown } from './executor';
 import { notifyArbitrageFound, notifyTradeExecuted, notifyBotStarted, notifyDailyStats, notifySettlement, notifyOverallStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
@@ -114,6 +114,11 @@ const selectOpportunities = (
     
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
+        
+        // 跳过冷却中的市场
+        if (isOnCooldown(opp.conditionId)) {
+            continue;
+        }
         
         // 检查是否有足够深度
         const maxTradeUSD = opp.maxShares * opp.combinedCost;

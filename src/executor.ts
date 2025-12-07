@@ -19,6 +19,10 @@ let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
 let wallet: ethers.Wallet | null = null;
 
+// 下单冷却（防止同一市场频繁下单）
+const tradeCooldowns = new Map<string, number>();  // conditionId -> lastTradeTime
+const TRADE_COOLDOWN_MS = 30000;  // 同一市场 30 秒冷却
+
 // Polygon 合约地址
 const CONTRACTS = {
     // USDC on Polygon (PoS Bridge - 旧版)
@@ -352,6 +356,15 @@ const executeBuy = async (
 };
 
 /**
+ * 检查是否在冷却中
+ */
+export const isOnCooldown = (conditionId: string): boolean => {
+    const lastTrade = tradeCooldowns.get(conditionId);
+    if (!lastTrade) return false;
+    return Date.now() - lastTrade < TRADE_COOLDOWN_MS;
+};
+
+/**
  * 智能套利执行 - 根据深度和仓位动态下单
  */
 export const executeArbitrage = async (
@@ -364,6 +377,11 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
+    // 检查冷却
+    if (isOnCooldown(opportunity.conditionId)) {
+        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    }
+    
     // 检查仓位不平衡度
     const imbalance = getImbalance(opportunity.conditionId);
     
@@ -467,6 +485,11 @@ export const executeArbitrage = async (
     const minShares = Math.min(upResult.filled, downResult.filled);
     const expectedProfit = minShares * (1 - opportunity.combinedCost);
     
+    // 设置冷却
+    if (upResult.success || downResult.success) {
+        tradeCooldowns.set(opportunity.conditionId, Date.now());
+    }
+    
     return {
         success: upResult.success || downResult.success,
         upFilled: upResult.filled,
@@ -482,4 +505,5 @@ export default {
     getUSDCBalance,
     ensureApprovals,
     executeArbitrage,
+    isOnCooldown,
 };
