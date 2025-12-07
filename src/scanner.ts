@@ -316,22 +316,14 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const combinedCost = upBook.bestAsk + downBook.bestAsk;
         const profitPercent = (1 - combinedCost) * 100;
         
-        // 单边价格阈值判断
-        const upIsCheap = upBook.bestAsk <= CONFIG.UP_PRICE_THRESHOLD;
-        const downIsCheap = downBook.bestAsk <= CONFIG.DOWN_PRICE_THRESHOLD;
+        // 只做真套利：Up + Down < $1.00
+        const hasArbitrage = combinedCost < 1.0 && profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT;
         
-        // 有套利空间 或 单边价格足够便宜
-        const hasArbitrage = profitPercent >= CONFIG.MIN_ARBITRAGE_PERCENT;
-        const hasCheapSide = upIsCheap || downIsCheap;
-        
-        if (hasArbitrage || hasCheapSide) {
+        if (hasArbitrage) {
             const maxShares = Math.min(upBook.bestAskSize, downBook.bestAskSize);
-            
-            // 计算优先级分数
-            let priority = profitPercent;
-            if (upIsCheap) priority += 5;
-            if (downIsCheap) priority += 5;
-            if (hasArbitrage && hasCheapSide) priority += 10;
+            const priority = profitPercent;
+            const upIsCheap = false;
+            const downIsCheap = false;
             
             opportunities.push({
                 conditionId: market.condition_id,

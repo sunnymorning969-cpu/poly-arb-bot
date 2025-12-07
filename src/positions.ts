@@ -103,8 +103,6 @@ export const updatePosition = (
     
     // 保存到持久化存储
     saveToStorage(pos);
-    
-    Logger.info(`📊 仓位更新 [${slug.slice(0, 30)}]: Up=${pos.upShares.toFixed(1)} Down=${pos.downShares.toFixed(1)}`);
 };
 
 /**

@@ -19,9 +19,9 @@ let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
 let wallet: ethers.Wallet | null = null;
 
-// 记录上次下单的价格（同一价格不重复下单）
-const lastTradePrices = new Map<string, { upPrice: number; downPrice: number; timestamp: number }>();
-const PRICE_CHANGE_THRESHOLD = 0.005; // 价格变化超过 0.5% 才重新下单
+// 记录上次下单时间（同一市场必须冷却）
+const lastTradeTime = new Map<string, number>();
+const TRADE_COOLDOWN_MS = 60000;  // 同一市场 60 秒冷却
 
 // Polygon 合约地址
 const CONTRACTS = {
@@ -343,31 +343,21 @@ const executeBuy = async (
 };
 
 /**
- * 检查是否是重复机会（同一价格不重复下单）
+ * 检查是否在冷却中（同一市场 60 秒内不重复下单）
  */
-export const isDuplicateOpportunity = (conditionId: string, upPrice: number, downPrice: number): boolean => {
-    const last = lastTradePrices.get(conditionId);
-    if (!last) return false;
+export const isDuplicateOpportunity = (conditionId: string, _upPrice: number, _downPrice: number): boolean => {
+    const lastTime = lastTradeTime.get(conditionId);
+    if (!lastTime) return false;
     
-    // 5分钟后清除记录，允许重新下单
-    if (Date.now() - last.timestamp > 5 * 60 * 1000) {
-        lastTradePrices.delete(conditionId);
-        return false;
-    }
-    
-    // 检查价格是否有显著变化
-    const upChange = Math.abs(upPrice - last.upPrice) / Math.max(last.upPrice, 0.01);
-    const downChange = Math.abs(downPrice - last.downPrice) / Math.max(last.downPrice, 0.01);
-    
-    // 如果价格没有显著变化，认为是重复机会
-    return upChange < PRICE_CHANGE_THRESHOLD && downChange < PRICE_CHANGE_THRESHOLD;
+    // 60 秒冷却
+    return Date.now() - lastTime < TRADE_COOLDOWN_MS;
 };
 
 /**
- * 记录下单价格
+ * 记录下单时间
  */
-export const recordTradePrice = (conditionId: string, upPrice: number, downPrice: number): void => {
-    lastTradePrices.set(conditionId, { upPrice, downPrice, timestamp: Date.now() });
+export const recordTradePrice = (conditionId: string, _upPrice: number, _downPrice: number): void => {
+    lastTradeTime.set(conditionId, Date.now());
 };
 
 // 兼容旧接口
@@ -415,33 +405,18 @@ export const executeArbitrage = async (
     let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     let downResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     
-    // 判断是否有真套利（Up + Down < $1.00）
+    // 只做真套利（Up + Down < $1.00）
     const hasRealArbitrage = opportunity.combinedCost < 1.0;
     
-    let shouldBuyUp = false;
-    let shouldBuyDown = false;
-    let strategyType: 'arbitrage' | 'speculation' = 'speculation';
-    
-    if (hasRealArbitrage) {
-        // 真套利：买两边
-        strategyType = 'arbitrage';
-        shouldBuyUp = upOrderSize > 0;
-        shouldBuyDown = downOrderSize > 0;
-    } else {
-        // 没有套利空间，只买单边便宜的（投机）
-        if (opportunity.upIsCheap && !opportunity.downIsCheap) {
-            shouldBuyUp = upOrderSize > 0;
-        } else if (opportunity.downIsCheap && !opportunity.upIsCheap) {
-            shouldBuyDown = downOrderSize > 0;
-        } else if (opportunity.upIsCheap && opportunity.downIsCheap) {
-            // 两边都便宜，选更便宜的
-            if (opportunity.upAskPrice < opportunity.downAskPrice) {
-                shouldBuyUp = upOrderSize > 0;
-            } else {
-                shouldBuyDown = downOrderSize > 0;
-            }
-        }
+    if (!hasRealArbitrage) {
+        // 没有套利空间，跳过
+        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
     }
+    
+    // 真套利：买两边
+    const shouldBuyUp = upOrderSize > 0;
+    const shouldBuyDown = downOrderSize > 0;
+    const strategyType = 'arbitrage';
     
     // 并行执行下单
     const promises: Promise<any>[] = [];
