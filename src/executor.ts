@@ -1,0 +1,445 @@
+/**
+ * 套利执行器 - 智能策略版本
+ * 
+ * 核心逻辑：
+ * 1. 根据订单簿深度动态决定下单金额
+ * 2. 可以单边或双边下单
+ * 3. 追踪仓位确保最终平衡
+ */
+
+import { ethers, BigNumber } from 'ethers';
+import { ClobClient, OrderType, Side } from '@polymarket/clob-client';
+import { SignatureType } from '@polymarket/order-utils';
+import CONFIG from './config';
+import Logger from './logger';
+import { ArbitrageOpportunity } from './scanner';
+import { updatePosition, getImbalance } from './positions';
+
+let clobClient: ClobClient | null = null;
+let provider: ethers.providers.JsonRpcProvider | null = null;
+let wallet: ethers.Wallet | null = null;
+
+// Polygon 合约地址
+const CONTRACTS = {
+    // USDC on Polygon
+    USDC: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+    // Polymarket CTF Exchange (需要授权 USDC)
+    CTF_EXCHANGE: '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C',
+    // Polymarket Neg Risk CTF Exchange
+    NEG_RISK_CTF_EXCHANGE: '0xC5d563A36AE78145C45a50134d48A1215220f80a',
+    // Polymarket Neg Risk Adapter
+    NEG_RISK_ADAPTER: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',
+};
+
+// ERC20 ABI (只需要 approve 和 allowance)
+const ERC20_ABI = [
+    'function approve(address spender, uint256 amount) returns (bool)',
+    'function allowance(address owner, address spender) view returns (uint256)',
+    'function balanceOf(address account) view returns (uint256)',
+    'function decimals() view returns (uint8)',
+];
+
+// 无限授权额度
+const MAX_APPROVAL = ethers.constants.MaxUint256;
+
+/**
+ * 获取 Provider 和 Wallet
+ */
+const getProviderAndWallet = (): { provider: ethers.providers.JsonRpcProvider; wallet: ethers.Wallet } => {
+    if (!provider) {
+        provider = new ethers.providers.JsonRpcProvider(CONFIG.RPC_URL);
+    }
+    if (!wallet) {
+        wallet = new ethers.Wallet(CONFIG.PRIVATE_KEY, provider);
+    }
+    return { provider, wallet };
+};
+
+/**
+ * 检查钱包类型（EOA 或 Gnosis Safe）
+ */
+const isGnosisSafe = async (address: string): Promise<boolean> => {
+    try {
+        const { provider } = getProviderAndWallet();
+        const code = await provider.getCode(address);
+        return code !== '0x';
+    } catch (error) {
+        return false;
+    }
+};
+
+/**
+ * 检查 USDC 授权额度
+ */
+const checkAllowance = async (spender: string): Promise<BigNumber> => {
+    try {
+        const { provider, wallet } = getProviderAndWallet();
+        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, provider);
+        const ownerAddress = CONFIG.PROXY_WALLET || wallet.address;
+        return await usdc.allowance(ownerAddress, spender);
+    } catch (error) {
+        Logger.error(`检查授权失败: ${error}`);
+        return BigNumber.from(0);
+    }
+};
+
+/**
+ * 授权 USDC 给指定合约
+ */
+const approveUSDC = async (spender: string, spenderName: string): Promise<boolean> => {
+    try {
+        const { wallet } = getProviderAndWallet();
+        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, wallet);
+        
+        Logger.info(`📝 正在授权 USDC 给 ${spenderName}...`);
+        
+        const tx = await usdc.approve(spender, MAX_APPROVAL, {
+            gasLimit: 100000,
+        });
+        
+        Logger.info(`⏳ 等待交易确认: ${tx.hash}`);
+        const receipt = await tx.wait();
+        
+        if (receipt.status === 1) {
+            Logger.success(`✅ 授权成功: ${spenderName}`);
+            return true;
+        } else {
+            Logger.error(`❌ 授权失败: ${spenderName}`);
+            return false;
+        }
+    } catch (error) {
+        Logger.error(`授权交易失败: ${error}`);
+        return false;
+    }
+};
+
+/**
+ * 检查并执行所有必要的 USDC 授权
+ */
+export const ensureApprovals = async (): Promise<boolean> => {
+    Logger.info('🔐 检查 USDC 授权状态...');
+    
+    // 最小授权阈值（1000 USDC = 1000 * 1e6）
+    const MIN_ALLOWANCE = BigNumber.from(1000).mul(BigNumber.from(10).pow(6));
+    
+    const spenders = [
+        { address: CONTRACTS.CTF_EXCHANGE, name: 'CTF Exchange' },
+        { address: CONTRACTS.NEG_RISK_CTF_EXCHANGE, name: 'Neg Risk CTF Exchange' },
+        { address: CONTRACTS.NEG_RISK_ADAPTER, name: 'Neg Risk Adapter' },
+    ];
+    
+    let allApproved = true;
+    
+    for (const spender of spenders) {
+        const allowance = await checkAllowance(spender.address);
+        
+        if (allowance.lt(MIN_ALLOWANCE)) {
+            Logger.warning(`⚠️ ${spender.name} 授权不足，需要授权`);
+            
+            if (CONFIG.SIMULATION_MODE) {
+                Logger.warning(`[模拟模式] 跳过实际授权`);
+                continue;
+            }
+            
+            const success = await approveUSDC(spender.address, spender.name);
+            if (!success) {
+                allApproved = false;
+            }
+        } else {
+            Logger.success(`✅ ${spender.name} 已授权`);
+        }
+    }
+    
+    if (allApproved) {
+        Logger.success('🔓 所有 USDC 授权已就绪');
+    } else {
+        Logger.warning('⚠️ 部分授权失败，交易可能受影响');
+    }
+    
+    return allApproved;
+};
+
+/**
+ * 获取 USDC 余额
+ */
+export const getUSDCBalance = async (): Promise<number> => {
+    try {
+        const { provider, wallet } = getProviderAndWallet();
+        const usdc = new ethers.Contract(CONTRACTS.USDC, ERC20_ABI, provider);
+        const ownerAddress = CONFIG.PROXY_WALLET || wallet.address;
+        const balance = await usdc.balanceOf(ownerAddress);
+        return parseFloat(ethers.utils.formatUnits(balance, 6));
+    } catch (error) {
+        Logger.error(`获取 USDC 余额失败: ${error}`);
+        return 0;
+    }
+};
+
+/**
+ * 初始化 CLOB 客户端
+ */
+export const initClient = async (): Promise<ClobClient> => {
+    if (clobClient) return clobClient;
+    
+    Logger.info('初始化交易客户端...');
+    
+    const { wallet: w } = getProviderAndWallet();
+    const isProxySafe = await isGnosisSafe(CONFIG.PROXY_WALLET);
+    const signatureType = isProxySafe ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
+    
+    Logger.info(`钱包类型: ${isProxySafe ? 'Gnosis Safe' : 'EOA'}`);
+    
+    // 使用不带 provider 的 wallet（CLOB client 需要）
+    const clobWallet = new ethers.Wallet(CONFIG.PRIVATE_KEY);
+    
+    let client = new ClobClient(
+        CONFIG.CLOB_HTTP_URL,
+        CONFIG.CHAIN_ID,
+        clobWallet,
+        undefined,
+        signatureType,
+        isProxySafe ? CONFIG.PROXY_WALLET : undefined
+    );
+    
+    // 获取 API Key
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    
+    let creds = await client.createApiKey();
+    if (!creds.key) {
+        creds = await client.deriveApiKey();
+    }
+    
+    console.log = originalLog;
+    console.error = originalError;
+    
+    clobClient = new ClobClient(
+        CONFIG.CLOB_HTTP_URL,
+        CONFIG.CHAIN_ID,
+        clobWallet,
+        creds,
+        signatureType,
+        isProxySafe ? CONFIG.PROXY_WALLET : undefined
+    );
+    
+    Logger.success('交易客户端初始化成功');
+    return clobClient;
+};
+
+/**
+ * 获取账户余额
+ */
+export const getBalance = async (): Promise<number> => {
+    try {
+        const client = await initClient();
+        const balances = await client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
+        return parseFloat(balances.balance || '0') / 1e6;
+    } catch (error) {
+        return 0;
+    }
+};
+
+/**
+ * 计算基于深度的下单金额
+ */
+const calculateOrderSize = (
+    availableSize: number,  // 订单簿可用数量
+    price: number,          // 价格
+): number => {
+    // 根据深度计算可用金额
+    const maxByDepth = availableSize * price * (CONFIG.DEPTH_USAGE_PERCENT / 100);
+    
+    // 限制在最小和最大之间
+    let orderSize = Math.min(maxByDepth, CONFIG.MAX_ORDER_SIZE_USD);
+    orderSize = Math.max(orderSize, CONFIG.MIN_ORDER_SIZE_USD);
+    
+    // 如果深度不够最小金额，返回 0
+    if (maxByDepth < CONFIG.MIN_ORDER_SIZE_USD) {
+        return 0;
+    }
+    
+    return orderSize;
+};
+
+/**
+ * 执行单边买入（直接使用 WebSocket 缓存的价格，不再请求 API）
+ */
+const executeBuy = async (
+    tokenId: string,
+    amountUSD: number,
+    cachedPrice: number,  // 使用 WebSocket 缓存的价格
+    outcome: string
+): Promise<{ success: boolean; filled: number; avgPrice: number; cost: number }> => {
+    try {
+        const client = await initClient();
+        
+        // 直接使用缓存价格，不再请求订单簿
+        const askPrice = cachedPrice;
+        
+        // 计算实际购买数量
+        const sharesToBuy = amountUSD / askPrice;
+        
+        Logger.info(`📤 ${outcome}: $${amountUSD.toFixed(2)} @ $${askPrice.toFixed(3)} (${sharesToBuy.toFixed(1)} shares)`);
+        
+        if (CONFIG.SIMULATION_MODE) {
+            Logger.warning(`[模拟] 跳过实际下单`);
+            return { success: true, filled: sharesToBuy, avgPrice: askPrice, cost: amountUSD };
+        }
+        
+        // 使用略高于缓存价格的价格下单（应对微小滑点）
+        const orderPrice = Math.min(askPrice * 1.005, 0.99);  // 最高 0.5% 滑点
+        
+        const orderArgs = {
+            side: Side.BUY,
+            tokenID: tokenId,
+            amount: amountUSD,
+            price: orderPrice,
+        };
+        
+        const signedOrder = await client.createMarketOrder(orderArgs);
+        const resp = await client.postOrder(signedOrder, OrderType.FOK);
+        
+        if (resp.success) {
+            Logger.success(`✅ ${outcome}: ${sharesToBuy.toFixed(1)} shares @ $${askPrice.toFixed(3)}`);
+            return { success: true, filled: sharesToBuy, avgPrice: askPrice, cost: amountUSD };
+        } else {
+            Logger.warning(`❌ ${outcome} 未成交`);
+            return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+        }
+    } catch (error) {
+        return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+    }
+};
+
+/**
+ * 智能套利执行 - 根据深度和仓位动态下单
+ */
+export const executeArbitrage = async (
+    opportunity: ArbitrageOpportunity,
+    _amountUSD: number  // 这个参数现在不用了，改为根据深度决定
+): Promise<{
+    success: boolean;
+    upFilled: number;
+    downFilled: number;
+    totalCost: number;
+    expectedProfit: number;
+}> => {
+    // 检查仓位不平衡度
+    const imbalance = getImbalance(opportunity.conditionId);
+    
+    // 根据深度计算下单金额
+    const upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
+    const downOrderSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
+    
+    // 如果两边深度都不够，跳过
+    if (upOrderSize === 0 && downOrderSize === 0) {
+        Logger.warning('深度不足，跳过');
+        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    }
+    
+    // 检查余额
+    const balance = await getBalance();
+    const totalNeeded = upOrderSize + downOrderSize;
+    if (balance < Math.min(upOrderSize, downOrderSize)) {
+        Logger.error(`余额不足: $${balance.toFixed(2)}`);
+        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    }
+    
+    let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
+    let downResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
+    
+    // 智能下单策略：结合仓位平衡 + 单边价格阈值
+    const shouldBuyUp = upOrderSize > 0 && (
+        imbalance.needBuy === 'up' ||      // 仓位需要补 Up
+        imbalance.needBuy === 'both' ||    // 仓位平衡，都可以买
+        opportunity.upIsCheap              // Up 价格便宜
+    );
+    
+    const shouldBuyDown = downOrderSize > 0 && (
+        imbalance.needBuy === 'down' ||    // 仓位需要补 Down
+        imbalance.needBuy === 'both' ||    // 仓位平衡，都可以买
+        opportunity.downIsCheap            // Down 价格便宜
+    );
+    
+    // 记录策略原因
+    if (opportunity.upIsCheap) {
+        Logger.info(`💰 Up 价格便宜 ($${opportunity.upAskPrice.toFixed(2)} < $${CONFIG.UP_PRICE_THRESHOLD})`);
+    }
+    if (opportunity.downIsCheap) {
+        Logger.info(`💰 Down 价格便宜 ($${opportunity.downAskPrice.toFixed(2)} < $${CONFIG.DOWN_PRICE_THRESHOLD})`);
+    }
+    if (imbalance.needBuy === 'up') {
+        Logger.info(`📈 仓位偏 Down，需补 Up (差 ${imbalance.upDeficit.toFixed(1)} shares)`);
+    }
+    if (imbalance.needBuy === 'down') {
+        Logger.info(`📉 仓位偏 Up，需补 Down (差 ${imbalance.downDeficit.toFixed(1)} shares)`);
+    }
+    
+    // 并行执行下单
+    const promises: Promise<any>[] = [];
+    
+    if (shouldBuyUp) {
+        promises.push(
+            executeBuy(opportunity.upToken.token_id, upOrderSize, opportunity.upAskPrice, 'Up')
+                .then(r => { upResult = r; })
+        );
+    }
+    
+    if (shouldBuyDown) {
+        promises.push(
+            executeBuy(opportunity.downToken.token_id, downOrderSize, opportunity.downAskPrice, 'Down')
+                .then(r => { downResult = r; })
+        );
+    }
+    
+    if (promises.length > 0) {
+        await Promise.all(promises);
+    } else {
+        Logger.warning('没有符合条件的下单');
+    }
+    
+    // 更新仓位
+    if (upResult.success) {
+        updatePosition(
+            opportunity.conditionId,
+            opportunity.slug,
+            opportunity.title,
+            'up',
+            upResult.filled,
+            upResult.cost,
+            opportunity.endDate
+        );
+    }
+    
+    if (downResult.success) {
+        updatePosition(
+            opportunity.conditionId,
+            opportunity.slug,
+            opportunity.title,
+            'down',
+            downResult.filled,
+            downResult.cost,
+            opportunity.endDate
+        );
+    }
+    
+    const totalCost = upResult.cost + downResult.cost;
+    const minShares = Math.min(upResult.filled, downResult.filled);
+    const expectedProfit = minShares * (1 - opportunity.combinedCost);
+    
+    return {
+        success: upResult.success || downResult.success,
+        upFilled: upResult.filled,
+        downFilled: downResult.filled,
+        totalCost,
+        expectedProfit,
+    };
+};
+
+export default {
+    initClient,
+    getBalance,
+    executeArbitrage,
+};
