@@ -16,51 +16,52 @@ for (const envVar of requiredEnvVars) {
 }
 
 export const CONFIG = {
-    // 钱包配置
+    // ========== 必填配置 ==========
     PRIVATE_KEY: process.env.PRIVATE_KEY as string,
     PROXY_WALLET: process.env.PROXY_WALLET as string,
     
-    // API 配置
+    // ========== API 配置 ==========
     CLOB_HTTP_URL: process.env.CLOB_HTTP_URL || 'https://clob.polymarket.com',
     RPC_URL: process.env.RPC_URL || 'https://polygon-rpc.com',
     GAMMA_API: 'https://gamma-api.polymarket.com',
     
-    // Telegram 配置
+    // ========== Telegram 通知 ==========
     TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648',
     TELEGRAM_GROUP_ID: process.env.TELEGRAM_GROUP_ID || '@rickyhutest',
-    TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED !== 'false',  // 默认开启
+    TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED !== 'false',
     
-    // ========== 基于交易员数据分析的配置 ==========
-    // 分析事件: BTC/ETH 15分钟(321/160笔) + BTC/ETH 1小时(1990/2520笔)
+    // ========== 交易参数 ==========
+    // 最小套利利润率（低于此值不交易）
+    MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     
-    // 事件级套利配置
-    MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),   // 最小利润0.1%（交易员几乎所有有利润的都做）
-    MAX_COMBINED_COST: parseFloat(process.env.MAX_COMBINED_COST || '1.03'),          // 最大合计$1.03（更保守，避免亏损）
-    MIN_ORDER_SIZE_USD: parseFloat(process.env.MIN_ORDER_SIZE_USD || '0.5'),         // 最小$0.5（分析显示有$0.13的小单）
-    MAX_ORDER_SIZE_USD: parseFloat(process.env.MAX_ORDER_SIZE_USD || '14'),          // 最大$14（分析显示最大约$13.92）
-    DEPTH_USAGE_PERCENT: parseFloat(process.env.DEPTH_USAGE_PERCENT || '90'),        // 使用90%深度（交易员吃单激进）
-    SCAN_INTERVAL_MS: parseInt(process.env.SCAN_INTERVAL_MS || '5'),                  // 5ms扫描（200次/秒）
+    // 单笔订单金额范围
+    MIN_ORDER_SIZE_USD: parseFloat(process.env.MIN_ORDER_SIZE_USD || '0.5'),
+    MAX_ORDER_SIZE_USD: parseFloat(process.env.MAX_ORDER_SIZE_USD || '14'),
     
-    // 单边买入阈值（基于分析：Up价格$0.08-$0.53，Down价格$0.33-$0.90）
-    UP_PRICE_THRESHOLD: parseFloat(process.env.UP_PRICE_THRESHOLD || '0.55'),        // Up<$0.55时可单边买入
-    DOWN_PRICE_THRESHOLD: parseFloat(process.env.DOWN_PRICE_THRESHOLD || '0.55'),    // Down<$0.55时可单边买入
+    // 使用订单簿深度的百分比
+    DEPTH_USAGE_PERCENT: parseFloat(process.env.DEPTH_USAGE_PERCENT || '90'),
     
-    // 频率与冷却控制（交易员约2秒，我们用1秒更激进）
-    TRADE_COOLDOWN_MS: parseInt(process.env.TRADE_COOLDOWN_MS || '1000'),             // 1秒冷却
-    MAX_PARALLEL_TRADES: parseInt(process.env.MAX_PARALLEL_TRADES || '8'),           // 最多8个并行（4个市场×2边）
+    // ========== 频率控制 ==========
+    // 扫描间隔（毫秒）
+    SCAN_INTERVAL_MS: parseInt(process.env.SCAN_INTERVAL_MS || '5'),
     
-    // 性能优化
-    MARKET_CACHE_MS: parseInt(process.env.MARKET_CACHE_MS || '5000'),
-    PARALLEL_ORDERBOOK_REQUESTS: parseInt(process.env.PARALLEL_ORDERBOOK_REQUESTS || '10'),
+    // 同一市场交易冷却时间（毫秒）
+    TRADE_COOLDOWN_MS: parseInt(process.env.TRADE_COOLDOWN_MS || '1000'),
     
-    // 安全配置（15分钟事件300+笔，1小时2000+笔）
-    MAX_DAILY_TRADES: parseInt(process.env.MAX_DAILY_TRADES || '3000'),              // 每日3000笔上限
-    MAX_DAILY_LOSS_USD: parseFloat(process.env.MAX_DAILY_LOSS_USD || '100'),         // 每日最大亏损$100
+    // 最大并行交易数
+    MAX_PARALLEL_TRADES: parseInt(process.env.MAX_PARALLEL_TRADES || '8'),
+    
+    // ========== 安全限制 ==========
+    // 每日最大交易次数
+    MAX_DAILY_TRADES: parseInt(process.env.MAX_DAILY_TRADES || '3000'),
+    
+    // 模拟模式（true=不实际下单）
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true',
     
-    // Polygon 链配置
+    // ========== 链配置 ==========
     CHAIN_ID: 137,
 };
 
 export default CONFIG;
+
 

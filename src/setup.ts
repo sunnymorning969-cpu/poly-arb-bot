@@ -60,56 +60,18 @@ const loadExistingConfig = (): Record<string, string> => {
     return config;
 };
 
-// 保存配置（使用基于交易员分析的默认值）
+// 保存配置（只保存必填项和用户修改的项）
 const saveConfig = (config: Record<string, string>): void => {
     const lines: string[] = [
         '# Polymarket 套利机器人配置',
-        '# 基于交易员数据分析的默认值',
         `# 生成时间: ${new Date().toLocaleString('zh-CN')}`,
         '',
-        '# ========== 钱包配置（必填）==========',
+        '# ========== 必填配置 ==========',
         `PRIVATE_KEY=${config.PRIVATE_KEY || ''}`,
         `PROXY_WALLET=${config.PROXY_WALLET || ''}`,
         '',
-        '# ========== API 配置 ==========',
-        'CLOB_HTTP_URL=https://clob.polymarket.com',
+        '# ========== 可选配置（其他均使用代码默认值）==========',
         `RPC_URL=${config.RPC_URL || 'https://polygon-rpc.com'}`,
-        '',
-        '# ========== Telegram 配置 ==========',
-        `TELEGRAM_BOT_TOKEN=${config.TELEGRAM_BOT_TOKEN || '7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648'}`,
-        `TELEGRAM_GROUP_ID=${config.TELEGRAM_GROUP_ID || '@rickyhutest'}`,
-        'TELEGRAM_ENABLED=true',
-        '',
-        '# ========== 套利配置（基于交易员分析）==========',
-        '# 最小利润 % (交易员几乎所有>0%的都做)',
-        'MIN_ARBITRAGE_PERCENT=0.1',
-        '# 最大 Up+Down 合计成本 (严格控制，仅用于已有仓位加仓)',
-        'MAX_COMBINED_COST=1.03',
-        '# 下单金额范围 (分析: $0.5-$14)',
-        'MIN_ORDER_SIZE_USD=1',
-        'MAX_ORDER_SIZE_USD=14',
-        '# 深度使用比例 %',
-        'DEPTH_USAGE_PERCENT=90',
-        '',
-        '# ========== 单边买入阈值 ==========',
-        '# Up/Down 价格低于此值时可单边买入',
-        'UP_PRICE_THRESHOLD=0.55',
-        'DOWN_PRICE_THRESHOLD=0.55',
-        '',
-        '# ========== 频率控制 ==========',
-        '# 冷却时间 ms (1秒，快速响应)',
-        'TRADE_COOLDOWN_MS=1000',
-        '# 扫描间隔 ms (5ms = 200次/秒)',
-        'SCAN_INTERVAL_MS=5',
-        '# 最大并行交易数',
-        'MAX_PARALLEL_TRADES=8',
-        '',
-        '# ========== 安全配置 ==========',
-        '# 每日最大交易数',
-        'MAX_DAILY_TRADES=3000',
-        '# 每日最大亏损 $',
-        'MAX_DAILY_LOSS_USD=100',
-        '# 模拟模式 (true=不真实下单)',
         `SIMULATION_MODE=${config.SIMULATION_MODE || 'true'}`,
         '',
     ];
@@ -200,4 +162,5 @@ main().catch((error) => {
     rl.close();
     process.exit(1);
 });
+
 

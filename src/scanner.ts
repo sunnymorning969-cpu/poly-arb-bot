@@ -13,6 +13,25 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
 
+// 扫描级别的冷却记录（防止重复检测）
+const scanCooldown = new Map<string, number>();
+const SCAN_COOLDOWN_MS = 2000;  // 同一时间段组 2秒内不重复扫描
+
+const isGroupOnCooldown = (timeGroup: TimeGroup): boolean => {
+    const lastTime = scanCooldown.get(timeGroup);
+    if (!lastTime) return false;
+    return Date.now() - lastTime < SCAN_COOLDOWN_MS;
+};
+
+const recordGroupScan = (timeGroup: TimeGroup): void => {
+    scanCooldown.set(timeGroup, Date.now());
+};
+
+// 清除冷却（交易执行后调用）
+export const clearGroupCooldown = (timeGroup: TimeGroup): void => {
+    scanCooldown.delete(timeGroup);
+};
+
 // 市场数据接口
 export interface MarketToken {
     token_id: string;
@@ -405,6 +424,11 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
     for (const [timeGroup, markets] of groups) {
         if (markets.length === 0) continue;
         
+        // 检查组级别冷却（防止同一组重复触发）
+        if (isGroupOnCooldown(timeGroup)) {
+            continue;
+        }
+        
         // 找出组内最便宜的 Up 和最便宜的 Down
         let cheapestUp: typeof markets[0] | null = null;
         let cheapestDown: typeof markets[0] | null = null;
@@ -445,75 +469,68 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const upIsCheap = cheapestUp.upBook.bestAsk < 0.50;
         const downIsCheap = cheapestDown.downBook.bestAsk < 0.50;
         
-        // 策略 1: 跨池组合成本 < $1.00，同时买入（最优情况）
-        if (crossPoolCost < 1.0 && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT) {
+        // ============ 严格价格检查 ============
+        // 跳过无效价格（< $0.01 视为无效）
+        const upPrice = cheapestUp.upBook.bestAsk;
+        const downPrice = cheapestDown.downBook.bestAsk;
+        
+        if (upPrice < 0.01 || downPrice < 0.01) {
+            continue;  // 跳过异常低价
+        }
+        
+        // ============ 核心套利条件 ============
+        // 只有 Up + Down < $1.00 才是真正的套利机会
+        // 使用 0.995 而不是 0.9999，留出手续费空间
+        const isRealArbitrage = crossPoolCost < 0.995;
+        
+        // 策略 1: 真正的套利机会（Up + Down < $1.00）
+        if (isRealArbitrage && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT) {
             tradingAction = 'buy_both';
-            priority = crossPoolProfit * 10 + (isCrossPool ? 5 : 0);  // 跨池加分
+            priority = crossPoolProfit * 10 + (isCrossPool ? 5 : 0);
         }
-        // 策略 2: 无仓位时，买便宜的一边
-        else if (!groupAnalysis.hasPosition) {
-            if (upIsCheap && cheapestUp.upBook.bestAsk < cheapestDown.downBook.bestAsk) {
-                tradingAction = 'buy_up_only';
-                priority = (0.50 - cheapestUp.upBook.bestAsk) * 20;
-            } else if (downIsCheap && cheapestDown.downBook.bestAsk < cheapestUp.upBook.bestAsk) {
-                tradingAction = 'buy_down_only';
-                priority = (0.50 - cheapestDown.downBook.bestAsk) * 20;
-            }
-        }
-        // 策略 3: 有仓位时，根据组合平衡决定
+        // 策略 2: 有仓位时的平衡操作
         else if (groupAnalysis.hasPosition) {
-            // 3a: 如果买入后组合成本 < $1.00，双边加仓
-            if (groupPrediction.newAvgCostPerPair < 1.0) {
+            // 2a: 当前组合成本仍有套利空间，可以加仓
+            if (isRealArbitrage && groupPrediction.newAvgCostPerPair < 0.995) {
                 tradingAction = 'buy_both';
                 priority = (1.0 - groupPrediction.newAvgCostPerPair) * 100;
             }
-            // 3b: 组合需要更多 Up
+            // 2b: 组合需要更多 Up，且 Up 便宜（单边平衡）
             else if (groupAnalysis.needMoreUp && upIsCheap) {
                 const upOnlyPrediction = predictGroupCostAfterBuy(
                     timeGroup,
                     Math.min(cheapestUp.upBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
-                    cheapestUp.upBook.bestAsk,
+                    upPrice,
                     0,
-                    cheapestDown.downBook.bestAsk
+                    downPrice
                 );
-                if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
+                if (upOnlyPrediction.newAvgCostPerPair < 0.995) {
                     tradingAction = 'buy_up_only';
                     priority = 8;
                 }
             }
-            // 3c: 组合需要更多 Down
+            // 2c: 组合需要更多 Down，且 Down 便宜（单边平衡）
             else if (groupAnalysis.needMoreDown && downIsCheap) {
                 const downOnlyPrediction = predictGroupCostAfterBuy(
                     timeGroup,
                     0,
-                    cheapestUp.upBook.bestAsk,
+                    upPrice,
                     Math.min(cheapestDown.downBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
-                    cheapestDown.downBook.bestAsk
+                    downPrice
                 );
-                if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
+                if (downOnlyPrediction.newAvgCostPerPair < 0.995) {
                     tradingAction = 'buy_down_only';
                     priority = 8;
                 }
             }
-            // 3d: 某边特别便宜
-            else if (upIsCheap && cheapestUp.upBook.bestAsk < 0.45) {
-                const upOnlyPrediction = predictGroupCostAfterBuy(timeGroup, 50, cheapestUp.upBook.bestAsk, 0, cheapestDown.downBook.bestAsk);
-                if (upOnlyPrediction.newAvgCostPerPair < 1.0) {
-                    tradingAction = 'buy_up_only';
-                    priority = 3;
-                }
-            }
-            else if (downIsCheap && cheapestDown.downBook.bestAsk < 0.45) {
-                const downOnlyPrediction = predictGroupCostAfterBuy(timeGroup, 0, cheapestUp.upBook.bestAsk, 50, cheapestDown.downBook.bestAsk);
-                if (downOnlyPrediction.newAvgCostPerPair < 1.0) {
-                    tradingAction = 'buy_down_only';
-                    priority = 3;
-                }
-            }
         }
+        // 策略 3: 无仓位时，只有真正套利才开仓（已在策略1覆盖）
         
         // 只添加有动作的机会
         if (tradingAction !== 'wait') {
+            // 记录组级别冷却，防止重复扫描
+            recordGroupScan(timeGroup);
+            
             opportunities.push({
                 // 基本信息
                 conditionId: cheapestUp.conditionId,
@@ -686,4 +703,5 @@ export default {
     getCurrentPrices,
     getDebugInfo,
 };
+
 

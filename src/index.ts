@@ -59,22 +59,21 @@ const printConfig = () => {
     const storageStatus = getStorageStatus();
     
     Logger.info('📋 当前配置:');
-    Logger.info(`   钱包地址: ${CONFIG.PROXY_WALLET.slice(0, 10)}...${CONFIG.PROXY_WALLET.slice(-8)}`);
-    Logger.info(`   RPC: ${CONFIG.RPC_URL.slice(0, 40)}...`);
-    Logger.info(`   数据源: ⚡ WebSocket 实时推送`);
-    Logger.info(`   最小套利空间: ${CONFIG.MIN_ARBITRAGE_PERCENT}%`);
-    Logger.info(`   下单范围: $${CONFIG.MIN_ORDER_SIZE_USD} - $${CONFIG.MAX_ORDER_SIZE_USD}`);
-    Logger.info(`   并行下单: 最多 ${CONFIG.MAX_PARALLEL_TRADES} 个市场`);
+    Logger.info(`   钱包: ${CONFIG.PROXY_WALLET.slice(0, 10)}...${CONFIG.PROXY_WALLET.slice(-8)}`);
+    Logger.info(`   模式: ${CONFIG.SIMULATION_MODE ? '🔵 模拟' : '🔴 实盘'}`);
     Logger.divider();
-    Logger.info('💰 单边价格阈值:');
-    Logger.info(`   Up < $${CONFIG.UP_PRICE_THRESHOLD} → 优先买入`);
-    Logger.info(`   Down < $${CONFIG.DOWN_PRICE_THRESHOLD} → 优先买入`);
+    Logger.info('⚙️ 交易参数:');
+    Logger.info(`   最小利润: ${CONFIG.MIN_ARBITRAGE_PERCENT}%`);
+    Logger.info(`   订单范围: $${CONFIG.MIN_ORDER_SIZE_USD} - $${CONFIG.MAX_ORDER_SIZE_USD}`);
+    Logger.info(`   深度使用: ${CONFIG.DEPTH_USAGE_PERCENT}%`);
+    Logger.divider();
+    Logger.info('⏱️ 频率控制:');
+    Logger.info(`   扫描间隔: ${CONFIG.SCAN_INTERVAL_MS}ms`);
+    Logger.info(`   交易冷却: ${CONFIG.TRADE_COOLDOWN_MS}ms`);
+    Logger.info(`   并行上限: ${CONFIG.MAX_PARALLEL_TRADES}`);
     Logger.divider();
     Logger.info('💾 数据存储:');
-    Logger.info(`   存储位置: ${storageStatus.dataFile}`);
-    Logger.info(`   已有仓位: ${storageStatus.positionsCount} | 结算历史: ${storageStatus.historyCount}`);
-    Logger.divider();
-    Logger.info(`   模拟模式: ${CONFIG.SIMULATION_MODE ? '✅ 开启' : '❌ 关闭'}`);
+    Logger.info(`   位置: ${storageStatus.positionsCount} 仓位 | ${storageStatus.historyCount} 历史`);
     Logger.divider();
 };
 
@@ -102,7 +101,7 @@ const printStats = () => {
 /**
  * 选择套利机会（事件级策略）
  * 
- * 简化版：scanner 已经做了机会判断，这里只做冷却检查
+ * 增强版：scanner 已经做了机会判断，这里做最终验证和冷却检查
  */
 const selectOpportunities = (
     opportunities: ArbitrageOpportunity[]
@@ -116,7 +115,18 @@ const selectOpportunities = (
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
-        // 跳过冷却中的市场（跨池子时检查两个市场）
+        // ============ 最终验证 ============
+        // 1. 价格有效性检查
+        if (opp.upAskPrice < 0.01 || opp.downAskPrice < 0.01) {
+            continue;  // 跳过异常价格
+        }
+        
+        // 2. buy_both 必须满足合计 < $1.00
+        if (opp.tradingAction === 'buy_both' && opp.combinedCost >= 0.995) {
+            continue;  // 合计 >= $0.995 不是真正套利
+        }
+        
+        // 3. 冷却检查（跨池子时检查两个市场）
         if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
             continue;
         }
@@ -346,4 +356,5 @@ mainLoop().catch(error => {
     Logger.error(`机器人崩溃: ${error}`);
     process.exit(1);
 });
+
 

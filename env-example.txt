@@ -1,68 +1,10 @@
-# Polymarket 套利机器人配置 (基于交易员数据分析)
-# 复制此文件为 .env 并填入你的私钥和钱包地址
-# 
-# 分析样本: BTC/ETH 15分钟(321/160笔) + BTC/ETH 1小时(1990/2520笔)
+# Polymarket 套利机器人配置
+# 运行 npm run setup 自动生成，或手动复制此文件为 .env
 
-# ========== 钱包配置（必填）==========
-# 你的钱包私钥（不要泄露！）
+# ========== 必填配置 ==========
 PRIVATE_KEY=你的私钥
-
-# 代理钱包地址（用于交易的钱包）
 PROXY_WALLET=你的钱包地址
 
-# ========== API 配置 ==========
-CLOB_HTTP_URL=https://clob.polymarket.com
-RPC_URL=https://polygon-rpc.com
-
-# ========== Telegram 配置 ==========
-TELEGRAM_BOT_TOKEN=7698365045:AAGaPd7zLHdb4Ky7Tw0NobpcRCpNKWk-648
-TELEGRAM_GROUP_ID=@rickyhutest
-TELEGRAM_ENABLED=true
-
-# ========== 事件级套利配置（基于交易员分析）==========
-# 最小套利利润 % (交易员几乎所有>0%的都做)
-MIN_ARBITRAGE_PERCENT=0.1
-
-# 最大合计成本 (分析显示部分交易 Up+Down > $1)
-MAX_COMBINED_COST=1.05
-
-# 最小下单金额 $ (分析显示有 $0.13 小单)
-MIN_ORDER_SIZE_USD=0.5
-
-# 最大下单金额 $ (分析显示最大约 $14)
-MAX_ORDER_SIZE_USD=14
-
-# 深度使用比例 % (交易员吃单激进)
-DEPTH_USAGE_PERCENT=90
-
-# ========== 单边买入阈值（基于价格分析）==========
-# Up价格范围: $0.08-$0.53, Up < $0.55 时可单边买入
-UP_PRICE_THRESHOLD=0.55
-
-# Down价格范围: $0.33-$0.90, Down < $0.55 时可单边买入
-DOWN_PRICE_THRESHOLD=0.55
-
-# ========== 频率与冷却控制 ==========
-# 冷却时间 ms (分析显示交易员约2秒一笔，我们设5秒略保守)
-TRADE_COOLDOWN_MS=5000
-
-# 扫描间隔 ms
-SCAN_INTERVAL_MS=50
-
-# 最大并行交易数 (4市场×2边)
-MAX_PARALLEL_TRADES=8
-
-# ========== 安全配置 ==========
-# 每日最大交易数 (分析显示1小时约2000笔)
-MAX_DAILY_TRADES=3000
-
-# 每日最大亏损 $
-MAX_DAILY_LOSS_USD=100
-
-# 模拟模式 (true=不真实下单，用于测试)
-SIMULATION_MODE=true
-
-# ========== 数据存储 ==========
-# 默认使用本地 JSON 文件存储（无需配置）
-# 数据文件位置: ./data/bot-data.json
-
+# ========== 可选配置 ==========
+# RPC_URL=https://polygon-rpc.com
+# SIMULATION_MODE=true

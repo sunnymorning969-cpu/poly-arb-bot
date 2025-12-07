@@ -185,18 +185,16 @@ export const notifyBotStarted = async (): Promise<void> => {
     const message = `
 🤖 <b>套利机器人 v3.0 已启动！</b>
 
-⚡ <b>架构:</b> WebSocket 实时订单簿
+⚡ <b>模式:</b> ${CONFIG.SIMULATION_MODE ? '🔵 模拟' : '🔴 实盘'}
 
-⚙️ <b>配置信息:</b>
-   • 最小套利空间: ${CONFIG.MIN_ARBITRAGE_PERCENT}%
-   • 下单范围: $${CONFIG.MIN_ORDER_SIZE_USD}-$${CONFIG.MAX_ORDER_SIZE_USD}
-   • 并行下单: 最多 ${CONFIG.MAX_PARALLEL_TRADES} 个市场
+⚙️ <b>交易参数:</b>
+   • 最小利润: ${CONFIG.MIN_ARBITRAGE_PERCENT}%
+   • 订单范围: $${CONFIG.MIN_ORDER_SIZE_USD}-$${CONFIG.MAX_ORDER_SIZE_USD}
+   • 并行上限: ${CONFIG.MAX_PARALLEL_TRADES}
 
-💰 <b>单边阈值:</b>
-   • Up < $${CONFIG.UP_PRICE_THRESHOLD} 优先买入
-   • Down < $${CONFIG.DOWN_PRICE_THRESHOLD} 优先买入
-
-   • 模拟模式: ${CONFIG.SIMULATION_MODE ? '✅ 开启' : '❌ 关闭'}
+⏱️ <b>频率控制:</b>
+   • 扫描: ${CONFIG.SCAN_INTERVAL_MS}ms
+   • 冷却: ${CONFIG.TRADE_COOLDOWN_MS}ms
 
 🔍 监控 BTC/ETH Up/Down (15min + 1hr)...
 `.trim();
@@ -425,4 +423,5 @@ export default {
     notifyPositionReport,
     notifyEventSummary,
 };
+
 
