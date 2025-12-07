@@ -148,9 +148,11 @@ const selectOpportunities = (
         const groupInfo = opp.groupAnalysis?.hasPosition ? 
             `组:U${opp.groupAnalysis.imbalance > 0 ? '+' : ''}${opp.groupAnalysis.imbalance.toFixed(0)}` : '新仓';
         
-        // 显示 Up 和 Down 来源
-        const upSource = opp.upMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
-        const downSource = opp.downMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+        // 显示 Up 和 Down 来源（兼容 btc/bitcoin 和 eth/ethereum）
+        const isBtcUp = opp.upMarketSlug?.includes('btc') || opp.upMarketSlug?.includes('bitcoin');
+        const isBtcDown = opp.downMarketSlug?.includes('btc') || opp.downMarketSlug?.includes('bitcoin');
+        const upSource = isBtcUp ? 'BTC' : 'ETH';
+        const downSource = isBtcDown ? 'BTC' : 'ETH';
         const sourceInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : opp.timeGroup;
         
         Logger.success(`${actionEmoji}${crossPoolTag} ${sourceInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
@@ -334,7 +336,7 @@ const mainLoop = async () => {
             
             // 每15秒检查：结算到期仓位 + 事件切换
             if (now - lastPriceLog >= 15000) {
-                checkAndSettleExpired();
+                await checkAndSettleExpired();  // 异步获取真实结果
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
             }
@@ -342,7 +344,7 @@ const mainLoop = async () => {
             // 每2分钟发送一次持仓汇报到 Telegram
             if (now - lastPositionReport >= 2 * 60 * 1000) {
                 // 先检查结算，确保不发送已结算的仓位
-                checkAndSettleExpired();
+                await checkAndSettleExpired();
                 const allPositions = getAllPositions();
                 // 只有还有活跃仓位时才发送汇报
                 if (allPositions.length > 0) {

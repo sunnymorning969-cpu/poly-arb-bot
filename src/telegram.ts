@@ -170,10 +170,12 @@ export const notifyTradeExecuted = async (
         detailLines += `   • Down: ${result.downFilled.toFixed(1)} shares @ $${downPrice}\n`;
     }
     
-    // 跨池子标记
+    // 跨池子标记（兼容 btc/bitcoin 和 eth/ethereum）
     const crossPoolTag = opportunity.isCrossPool ? '🔀跨池 ' : '';
-    const upSource = opportunity.upMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
-    const downSource = opportunity.downMarketSlug?.includes('btc') ? 'BTC' : 'ETH';
+    const isBtcUp = opportunity.upMarketSlug?.includes('btc') || opportunity.upMarketSlug?.includes('bitcoin');
+    const isBtcDown = opportunity.downMarketSlug?.includes('btc') || opportunity.downMarketSlug?.includes('bitcoin');
+    const upSource = isBtcUp ? 'BTC' : 'ETH';
+    const downSource = isBtcDown ? 'BTC' : 'ETH';
     const sourceInfo = opportunity.isCrossPool ? `${upSource}↑ + ${downSource}↓` : opportunity.timeGroup;
     
     const message = `

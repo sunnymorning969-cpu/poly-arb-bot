@@ -4,7 +4,9 @@
  * 支持数据持久化，重启后不丢失仓位
  */
 
+import axios from 'axios';
 import Logger from './logger';
+import CONFIG from './config';
 import {
     getStoredPositions,
     savePosition as saveToStorage,
@@ -406,12 +408,86 @@ export const onSettlement = (callback: (result: SettlementResult) => void): void
 };
 
 /**
- * 结算一个仓位（模拟模式下模拟结果）
+ * 从 Polymarket API 获取事件的真实结算结果
+ * 返回 'up' | 'down' | null（如果无法获取）
  */
-export const settlePosition = (pos: Position, simulatedOutcome?: 'up' | 'down'): SettlementResult => {
-    // 模拟模式下随机决定结果（或使用传入的结果）
-    // 实际运行时应该从 API 获取真实结果
-    const outcome = simulatedOutcome || (Math.random() > 0.5 ? 'up' : 'down');
+export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | null> => {
+    try {
+        const resp = await axios.get(`${CONFIG.GAMMA_API}/events`, {
+            params: { slug },
+            timeout: 10000,
+        });
+        
+        const events = resp.data;
+        if (!events || !Array.isArray(events) || events.length === 0) {
+            return null;
+        }
+        
+        const event = events[0];
+        const markets = event.markets;
+        
+        if (!markets || !Array.isArray(markets) || markets.length === 0) {
+            return null;
+        }
+        
+        // 找到 Up/Down 市场
+        for (const market of markets) {
+            let outcomes = market.outcomes;
+            if (typeof outcomes === 'string') {
+                try { outcomes = JSON.parse(outcomes); } catch { continue; }
+            }
+            
+            if (!outcomes || !Array.isArray(outcomes)) continue;
+            
+            const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
+            if (!outcomeNames.includes('up') || !outcomeNames.includes('down')) continue;
+            
+            // 检查市场是否已结算
+            // Polymarket 通常用 outcomePrices 来表示结果：获胜方价格 = 1，失败方价格 = 0
+            let outcomePrices = market.outcomePrices;
+            if (typeof outcomePrices === 'string') {
+                try { outcomePrices = JSON.parse(outcomePrices); } catch { continue; }
+            }
+            
+            if (outcomePrices && Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
+                const upIndex = outcomeNames.indexOf('up');
+                const downIndex = outcomeNames.indexOf('down');
+                
+                const upPrice = parseFloat(outcomePrices[upIndex]) || 0;
+                const downPrice = parseFloat(outcomePrices[downIndex]) || 0;
+                
+                // 如果价格是 1 或 0，说明已结算
+                if (upPrice >= 0.99) {
+                    Logger.info(`📊 ${slug} 真实结果: UP 获胜 (价格: ${upPrice})`);
+                    return 'up';
+                } else if (downPrice >= 0.99) {
+                    Logger.info(`📊 ${slug} 真实结果: DOWN 获胜 (价格: ${downPrice})`);
+                    return 'down';
+                }
+            }
+            
+            // 也检查 winningOutcome 字段（如果有）
+            if (market.winningOutcome) {
+                const winner = market.winningOutcome.toLowerCase();
+                if (winner === 'up' || winner === 'down') {
+                    Logger.info(`📊 ${slug} 真实结果: ${winner.toUpperCase()} 获胜 (winningOutcome)`);
+                    return winner as 'up' | 'down';
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        Logger.warning(`⚠️ 获取 ${slug} 结算结果失败: ${error}`);
+        return null;
+    }
+};
+
+/**
+ * 结算一个仓位
+ */
+export const settlePosition = (pos: Position, outcome: 'up' | 'down'): SettlementResult => {
+    // outcome 必须传入（真实结果或模拟结果）
     
     const totalCost = pos.upCost + pos.downCost;
     
@@ -460,10 +536,16 @@ export const settlePosition = (pos: Position, simulatedOutcome?: 'up' | 'down'):
 
 /**
  * 检查并结算已到期的仓位
+ * 
+ * 实盘模式：从 API 获取真实结算结果
+ * 模拟模式：同一时间组的 BTC/ETH 使用相同随机结果（因为高度相关）
  */
-export const checkAndSettleExpired = (): SettlementResult[] => {
+export const checkAndSettleExpired = async (): Promise<SettlementResult[]> => {
     const now = Date.now();
     const settled: SettlementResult[] = [];
+    
+    // 收集到期的仓位
+    const expiredPositions: Array<{ conditionId: string; pos: Position; endTime: number }> = [];
     
     for (const [conditionId, pos] of positions) {
         // 解析结束时间
@@ -479,12 +561,59 @@ export const checkAndSettleExpired = (): SettlementResult[] => {
         const bufferMs = 1 * 60 * 1000;  // 1 分钟
         if (endTime + bufferMs < now) {
             Logger.info(`⏰ 事件已结束: ${pos.slug} (结束于 ${new Date(endTime).toLocaleString()})`);
+            expiredPositions.push({ conditionId, pos, endTime });
+        }
+    }
+    
+    if (expiredPositions.length === 0) {
+        return settled;
+    }
+    
+    // ========== 实盘模式：获取真实结果 ==========
+    if (!CONFIG.SIMULATION_MODE) {
+        for (const { conditionId, pos } of expiredPositions) {
+            // 从 API 获取真实结果
+            const realOutcome = await fetchRealOutcome(pos.slug);
             
-            // 结算仓位
-            const result = settlePosition(pos);
+            if (realOutcome) {
+                const result = settlePosition(pos, realOutcome);
+                settled.push(result);
+                
+                // 从内存和存储中删除仓位
+                positions.delete(conditionId);
+                deleteFromStorage(conditionId);
+            } else {
+                Logger.warning(`⚠️ 无法获取 ${pos.slug} 的真实结果，延迟结算`);
+                // 不删除，下次再尝试
+            }
+        }
+        return settled;
+    }
+    
+    // ========== 模拟模式：同组使用相同随机结果 ==========
+    // 按时间组分组
+    const expiredByTimeGroup: Map<string, Array<{ conditionId: string; pos: Position }>> = new Map();
+    
+    for (const { conditionId, pos, endTime } of expiredPositions) {
+        const timeGroup = getTimeGroup(pos.slug);
+        const groupKey = `${timeGroup}-${endTime}`;
+        
+        if (!expiredByTimeGroup.has(groupKey)) {
+            expiredByTimeGroup.set(groupKey, []);
+        }
+        expiredByTimeGroup.get(groupKey)!.push({ conditionId, pos });
+    }
+    
+    // 按组结算
+    for (const [_groupKey, expiredList] of expiredByTimeGroup) {
+        // 同一时间组的 BTC/ETH 使用相同结果（因为高度相关）
+        const sharedOutcome: 'up' | 'down' = Math.random() > 0.5 ? 'up' : 'down';
+        Logger.info(`🎲 [模拟] 随机结果: ${sharedOutcome.toUpperCase()}`);
+        
+        for (const { conditionId, pos } of expiredList) {
+            const result = settlePosition(pos, sharedOutcome);
             settled.push(result);
             
-            // 从内存和存储中删除仓位
             positions.delete(conditionId);
             deleteFromStorage(conditionId);
         }
@@ -496,7 +625,7 @@ export const checkAndSettleExpired = (): SettlementResult[] => {
 /**
  * 清理已结算的仓位（保留向后兼容）
  */
-export const cleanExpiredPositions = (): SettlementResult[] => {
+export const cleanExpiredPositions = async (): Promise<SettlementResult[]> => {
     return checkAndSettleExpired();
 };
 
