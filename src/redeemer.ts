@@ -189,7 +189,7 @@ export const redeemPosition = async (conditionId: string, title?: string): Promi
     } catch (error: any) {
         // 如果是 "nothing to redeem" 类型的错误，不算失败
         if (error.message?.includes('nothing') || error.message?.includes('zero')) {
-            Logger.debug(`ℹ️ 无需赎回: ${conditionId.slice(0, 10)}...`);
+            // 静默处理，无需赎回
             return true;
         }
         Logger.error(`❌ 赎回出错: ${error.message || error}`);
