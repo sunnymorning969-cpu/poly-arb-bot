@@ -137,7 +137,13 @@ const selectOpportunities = (
         // 例如：MAX_ARBITRAGE_PERCENT=10 时，合计成本 < $0.90 不交易
         const minCombinedCost = 1 - (CONFIG.MAX_ARBITRAGE_PERCENT / 100);
         if (opp.tradingAction === 'buy_both' && opp.combinedCost < minCombinedCost) {
-            Logger.warning(`⚠️ 套利敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)}，市场分歧大，跳过`);
+            // 显示时间场和市场组合信息
+            const isBtcUp = opp.upMarketSlug?.includes('btc') || opp.upMarketSlug?.includes('bitcoin');
+            const isBtcDown = opp.downMarketSlug?.includes('btc') || opp.downMarketSlug?.includes('bitcoin');
+            const upSource = isBtcUp ? 'BTC' : 'ETH';
+            const downSource = isBtcDown ? 'BTC' : 'ETH';
+            const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
+            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)}，跳过`);
             continue;
         }
         
