@@ -466,7 +466,7 @@ export const executeArbitrage = async (
         const expectedProfitCheck = finalShares - finalCost;  // 套利利润 = 配对shares数 - 总成本
         
         if (expectedProfitCheck < CONFIG.MIN_PROFIT_USD) {
-            Logger.debug(`⏭️ ${crossTag} 利润太小: $${expectedProfitCheck.toFixed(3)} < $${CONFIG.MIN_PROFIT_USD}`);
+            // 利润太小，静默跳过
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_up_only') {
@@ -573,23 +573,23 @@ export const executeArbitrage = async (
     
     // 打印执行结果
     const success = upResult.success || downResult.success;
-    const crossTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
+    const poolTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
     const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
     
     if (success) {
         // 检查是否部分成交（buy_both 时只有一边成功）
         if (action === 'buy_both') {
             if (upResult.success && !downResult.success) {
-                Logger.warning(`⚠️ ${modeTag} ${crossTag} 部分成交: Up ✅ ${upResult.filled.toFixed(0)} | Down ❌ 失败 | 需要后续补仓 Down`);
+                Logger.warning(`⚠️ ${modeTag} ${poolTag} 部分成交: Up ✅ ${upResult.filled.toFixed(0)} | Down ❌ 失败 | 需要后续补仓 Down`);
             } else if (!upResult.success && downResult.success) {
-                Logger.warning(`⚠️ ${modeTag} ${crossTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)} | 需要后续补仓 Up`);
+                Logger.warning(`⚠️ ${modeTag} ${poolTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)} | 需要后续补仓 Up`);
             } else {
                 // 两边都成功
-                Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+                Logger.arbitrage(`${modeTag} ${poolTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
             }
         } else {
             // 单边买入
-            Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+            Logger.arbitrage(`${modeTag} ${poolTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
         }
     }
     
