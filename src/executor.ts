@@ -358,20 +358,20 @@ const executeBuy = async (
         // 用稍高一点的价格确保成交（FOK 要求价格匹配）
         const orderPrice = Math.min(askPrice * 1.005, 0.99);
         
-        // 使用 size 参数直接指定 shares 数量！
+        // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
+        const amount = shares * orderPrice;
         const orderArgs = { 
             side: Side.BUY, 
             tokenID: tokenId, 
-            size: shares,        // 直接用 shares 数量
+            amount: amount,      // USD 金额 = shares × price
             price: orderPrice 
         };
         const signedOrder = await client.createMarketOrder(orderArgs);
         const resp = await client.postOrder(signedOrder, OrderType.FOK);
         
         if (resp.success) {
-            const actualCost = shares * orderPrice;  // 实际成本
             Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
-            return { success: true, filled: shares, avgPrice: orderPrice, cost: actualCost };
+            return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
         }
         Logger.warning(`❌ ${outcome}: 订单未成交`);
         return { success: false, filled: 0, avgPrice: 0, cost: 0 };
