@@ -40,6 +40,10 @@ export const CONFIG = {
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     
+    // 最大套利利润率（高于此值说明市场分歧大，风险高，暂不交易）
+    // 例如：10 表示合计成本 < $0.90 时不交易
+    MAX_ARBITRAGE_PERCENT: parseFloat(process.env.MAX_ARBITRAGE_PERCENT || '10'),
+    
     // 最小套利利润金额（低于此值跳过，避免手续费亏损）
     MIN_PROFIT_USD: parseFloat(process.env.MIN_PROFIT_USD || '0.01'),
     

@@ -81,6 +81,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
+        `MAX_ARBITRAGE_PERCENT=${config.MAX_ARBITRAGE_PERCENT || '10'}`,
         `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '90'}`,
         '',
     ];
@@ -179,6 +180,16 @@ const main = async () => {
         config.MIN_PROFIT_USD = '0.01';
     }
     
+    const currentMaxArb = config.MAX_ARBITRAGE_PERCENT || '10';
+    log.info('最大套利敞口：超过此值说明市场分歧大，风险高');
+    log.info('例如 10% = 合计成本 < $0.90 时不交易');
+    const maxArb = await question(`最大套利敞口 % (当前: ${currentMaxArb}): `);
+    if (maxArb && !isNaN(parseFloat(maxArb))) {
+        config.MAX_ARBITRAGE_PERCENT = maxArb;
+    } else if (!config.MAX_ARBITRAGE_PERCENT) {
+        config.MAX_ARBITRAGE_PERCENT = '10';
+    }
+    
     const currentDepth = config.DEPTH_USAGE_PERCENT || '90';
     const depth = await question(`深度使用百分比 % (当前: ${currentDepth}): `);
     if (depth && !isNaN(parseFloat(depth))) {
@@ -202,6 +213,7 @@ const main = async () => {
     console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);
     console.log(`  最小利润: $${config.MIN_PROFIT_USD}`);
+    console.log(`  最大敞口: ${config.MAX_ARBITRAGE_PERCENT}%`);
     console.log(`  深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
     console.log('');
     log.success('启动命令: npm run dev');

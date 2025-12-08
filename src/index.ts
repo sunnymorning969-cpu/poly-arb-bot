@@ -133,7 +133,15 @@ const selectOpportunities = (
             continue;  // 合计 >= $0.995 不是真正套利
         }
         
-        // 4. 冷却检查（跨池子时检查两个市场）
+        // 4. 套利敞口不能太大（市场分歧大时风险高）
+        // 例如：MAX_ARBITRAGE_PERCENT=10 时，合计成本 < $0.90 不交易
+        const minCombinedCost = 1 - (CONFIG.MAX_ARBITRAGE_PERCENT / 100);
+        if (opp.tradingAction === 'buy_both' && opp.combinedCost < minCombinedCost) {
+            Logger.warning(`⚠️ 套利敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)}，市场分歧大，跳过`);
+            continue;
+        }
+        
+        // 5. 冷却检查（跨池子时检查两个市场）
         if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
             continue;
         }
