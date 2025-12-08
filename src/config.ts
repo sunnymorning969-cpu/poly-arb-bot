@@ -30,12 +30,20 @@ export const CONFIG = {
     TELEGRAM_GROUP_ID: process.env.TELEGRAM_GROUP_ID || '@rickyhutest',
     TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED !== 'false',
     
+    // ========== 市场开关 ==========
+    // 15分钟场开关（0=关闭，1=开启）
+    ENABLE_15MIN: process.env.ENABLE_15MIN !== '0',
+    // 1小时场开关（0=关闭，1=开启）
+    ENABLE_1HR: process.env.ENABLE_1HR !== '0',
+    
     // ========== 交易参数 ==========
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     
-    // 单笔订单金额范围
-    MIN_ORDER_SIZE_USD: parseFloat(process.env.MIN_ORDER_SIZE_USD || '0.5'),
+    // 最小套利利润金额（低于此值跳过，避免手续费亏损）
+    MIN_PROFIT_USD: parseFloat(process.env.MIN_PROFIT_USD || '0.01'),
+    
+    // 单笔订单最大金额
     MAX_ORDER_SIZE_USD: parseFloat(process.env.MAX_ORDER_SIZE_USD || '14'),
     
     // 使用订单簿深度的百分比
@@ -52,8 +60,8 @@ export const CONFIG = {
     MAX_PARALLEL_TRADES: parseInt(process.env.MAX_PARALLEL_TRADES || '8'),
     
     // ========== 安全限制 ==========
-    // 每日最大交易次数
-    MAX_DAILY_TRADES: parseInt(process.env.MAX_DAILY_TRADES || '3000'),
+    // 每日最大交易次数（24小时约需 86400 次）
+    MAX_DAILY_TRADES: parseInt(process.env.MAX_DAILY_TRADES || '100000'),
     
     // 模拟模式（true=不实际下单）
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true',

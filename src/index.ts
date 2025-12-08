@@ -14,6 +14,7 @@ import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitra
 import { notifyBotStarted, notifyBatchSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus } from './storage';
+import { checkAndRedeem } from './redeemer';
 
 // 统计数据
 interface Stats {
@@ -63,8 +64,9 @@ const printConfig = () => {
     Logger.info(`   模式: ${CONFIG.SIMULATION_MODE ? '🔵 模拟' : '🔴 实盘'}`);
     Logger.divider();
     Logger.info('⚙️ 交易参数:');
-    Logger.info(`   最小利润: ${CONFIG.MIN_ARBITRAGE_PERCENT}%`);
-    Logger.info(`   订单范围: $${CONFIG.MIN_ORDER_SIZE_USD} - $${CONFIG.MAX_ORDER_SIZE_USD}`);
+    Logger.info(`   最小利润率: ${CONFIG.MIN_ARBITRAGE_PERCENT}%`);
+    Logger.info(`   最小利润额: $${CONFIG.MIN_PROFIT_USD}`);
+    Logger.info(`   最大订单: $${CONFIG.MAX_ORDER_SIZE_USD}`);
     Logger.info(`   深度使用: ${CONFIG.DEPTH_USAGE_PERCENT}%`);
     Logger.divider();
     Logger.info('⏱️ 频率控制:');
@@ -322,6 +324,9 @@ const mainLoop = async () => {
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
             }
+            
+            // 自动赎回检查（内部控制5秒间隔）
+            checkAndRedeem().catch(() => {});
             
             // 每10分钟发送一次累计盈亏统计到 Telegram
             if (now - lastPositionReport >= 10 * 60 * 1000) {

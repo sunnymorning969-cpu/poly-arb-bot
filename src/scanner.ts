@@ -145,6 +145,7 @@ export const checkEventSwitch = async (): Promise<boolean> => {
 
 /**
  * 根据当前 ET 时间生成市场 slug
+ * 根据配置决定是否包含 15分钟/1小时市场
  */
 function generateMarketSlugs(): string[] {
     const nowMs = Date.now();
@@ -158,20 +159,24 @@ function generateMarketSlugs(): string[] {
     
     const slugs: string[] = [];
     
-    // === 1小时市场 ===
-    const h12 = hour % 12 || 12;
-    const ampm = hour >= 12 ? 'pm' : 'am';
-    slugs.push(`bitcoin-up-or-down-${month}-${day}-${h12}${ampm}-et`);
-    slugs.push(`ethereum-up-or-down-${month}-${day}-${h12}${ampm}-et`);
+    // === 1小时市场（根据配置开关）===
+    if (CONFIG.ENABLE_1HR) {
+        const h12 = hour % 12 || 12;
+        const ampm = hour >= 12 ? 'pm' : 'am';
+        slugs.push(`bitcoin-up-or-down-${month}-${day}-${h12}${ampm}-et`);
+        slugs.push(`ethereum-up-or-down-${month}-${day}-${h12}${ampm}-et`);
+    }
     
-    // === 15分钟市场 ===
-    const min15Start = Math.floor(minute / 15) * 15;
-    const startEt = new Date(etDate);
-    startEt.setUTCMinutes(min15Start, 0, 0);
-    const timestamp = Math.floor((startEt.getTime() + 5 * 3600 * 1000) / 1000);
-    
-    slugs.push(`btc-updown-15m-${timestamp}`);
-    slugs.push(`eth-updown-15m-${timestamp}`);
+    // === 15分钟市场（根据配置开关）===
+    if (CONFIG.ENABLE_15MIN) {
+        const min15Start = Math.floor(minute / 15) * 15;
+        const startEt = new Date(etDate);
+        startEt.setUTCMinutes(min15Start, 0, 0);
+        const timestamp = Math.floor((startEt.getTime() + 5 * 3600 * 1000) / 1000);
+        
+        slugs.push(`btc-updown-15m-${timestamp}`);
+        slugs.push(`eth-updown-15m-${timestamp}`);
+    }
     
     return slugs;
 }

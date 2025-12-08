@@ -60,7 +60,7 @@ const loadExistingConfig = (): Record<string, string> => {
     return config;
 };
 
-// 保存配置（只保存必填项和用户修改的项）
+// 保存配置
 const saveConfig = (config: Record<string, string>): void => {
     const lines: string[] = [
         '# Polymarket 套利机器人配置',
@@ -70,9 +70,17 @@ const saveConfig = (config: Record<string, string>): void => {
         `PRIVATE_KEY=${config.PRIVATE_KEY || ''}`,
         `PROXY_WALLET=${config.PROXY_WALLET || ''}`,
         '',
-        '# ========== 可选配置（其他均使用代码默认值）==========',
-        `RPC_URL=${config.RPC_URL || 'https://polygon-rpc.com'}`,
+        '# ========== 模式 ==========',
         `SIMULATION_MODE=${config.SIMULATION_MODE || 'true'}`,
+        '',
+        '# ========== 市场开关（0=关闭，1=开启）==========',
+        `ENABLE_15MIN=${config.ENABLE_15MIN || '1'}`,
+        `ENABLE_1HR=${config.ENABLE_1HR || '1'}`,
+        '',
+        '# ========== 交易参数 ==========',
+        `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
+        `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
+        `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '90'}`,
         '',
     ];
     
@@ -129,16 +137,48 @@ const main = async () => {
         }
     }
     
-    // ===== 可选：RPC =====
-    log.title('🔗 RPC 配置 (可选，回车使用默认)');
-    const rpc = await question('RPC URL (默认 polygon-rpc.com): ');
-    if (rpc) config.RPC_URL = rpc;
-    
     // ===== 模拟模式 =====
     log.title('🔒 模式选择');
     log.info('模拟模式下不会真实下单，建议先测试');
     const simMode = await question('启用模拟模式？(y/n，默认 y): ');
     config.SIMULATION_MODE = simMode.toLowerCase() === 'n' ? 'false' : 'true';
+    
+    // ===== 市场开关 =====
+    log.title('📊 市场选择');
+    log.info('可以选择只开启某个时间段的市场');
+    
+    const enable15min = await question('开启 15分钟场？(0=关闭, 1=开启，默认 1): ');
+    config.ENABLE_15MIN = enable15min === '0' ? '0' : '1';
+    
+    const enable1hr = await question('开启 1小时场？(0=关闭, 1=开启，默认 1): ');
+    config.ENABLE_1HR = enable1hr === '0' ? '0' : '1';
+    
+    // ===== 交易参数 =====
+    log.title('💰 交易参数');
+    
+    const currentMaxOrder = config.MAX_ORDER_SIZE_USD || '14';
+    const maxOrder = await question(`最大单笔下单金额 USD (当前: ${currentMaxOrder}): `);
+    if (maxOrder && !isNaN(parseFloat(maxOrder))) {
+        config.MAX_ORDER_SIZE_USD = maxOrder;
+    } else if (!config.MAX_ORDER_SIZE_USD) {
+        config.MAX_ORDER_SIZE_USD = '14';
+    }
+    
+    const currentMinProfit = config.MIN_PROFIT_USD || '0.01';
+    const minProfit = await question(`最小套利利润 USD (当前: ${currentMinProfit}): `);
+    if (minProfit && !isNaN(parseFloat(minProfit))) {
+        config.MIN_PROFIT_USD = minProfit;
+    } else if (!config.MIN_PROFIT_USD) {
+        config.MIN_PROFIT_USD = '0.01';
+    }
+    
+    const currentDepth = config.DEPTH_USAGE_PERCENT || '90';
+    const depth = await question(`深度使用百分比 % (当前: ${currentDepth}): `);
+    if (depth && !isNaN(parseFloat(depth))) {
+        config.DEPTH_USAGE_PERCENT = depth;
+    } else if (!config.DEPTH_USAGE_PERCENT) {
+        config.DEPTH_USAGE_PERCENT = '90';
+    }
     
     // ===== 保存 =====
     saveConfig(config);
@@ -150,6 +190,11 @@ const main = async () => {
     console.log('');
     console.log(`  钱包: ${config.PROXY_WALLET || '未设置'}`);
     console.log(`  模式: ${config.SIMULATION_MODE === 'true' ? '🔵 模拟' : '🔴 真实交易'}`);
+    console.log(`  15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
+    console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
+    console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);
+    console.log(`  最小利润: $${config.MIN_PROFIT_USD}`);
+    console.log(`  深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
     console.log('');
     log.success('启动命令: npm run dev');
     console.log('');

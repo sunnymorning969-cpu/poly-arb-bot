@@ -201,8 +201,9 @@ export const notifyBotStarted = async (): Promise<void> => {
 ⚡ <b>模式:</b> ${CONFIG.SIMULATION_MODE ? '🔵 模拟' : '🔴 实盘'}
 
 ⚙️ <b>交易参数:</b>
-   • 最小利润: ${CONFIG.MIN_ARBITRAGE_PERCENT}%
-   • 订单范围: $${CONFIG.MIN_ORDER_SIZE_USD}-$${CONFIG.MAX_ORDER_SIZE_USD}
+   • 最小利润率: ${CONFIG.MIN_ARBITRAGE_PERCENT}%
+   • 最小利润额: $${CONFIG.MIN_PROFIT_USD}
+   • 最大订单: $${CONFIG.MAX_ORDER_SIZE_USD}
    • 并行上限: ${CONFIG.MAX_PARALLEL_TRADES}
 
 ⏱️ <b>频率控制:</b>

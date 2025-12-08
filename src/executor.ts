@@ -307,22 +307,17 @@ export const getBalance = async (): Promise<number> => {
 
 /**
  * 计算基于深度的下单金额
+ * 不再有最小金额限制，深度有多少就下多少（但不超过最大值）
  */
 const calculateOrderSize = (
     availableSize: number,  // 订单簿可用数量
     price: number,          // 价格
 ): number => {
-    // 根据深度计算可用金额
+    // 根据深度计算可用金额（使用配置的深度使用百分比）
     const maxByDepth = availableSize * price * (CONFIG.DEPTH_USAGE_PERCENT / 100);
     
-    // 限制在最小和最大之间
-    let orderSize = Math.min(maxByDepth, CONFIG.MAX_ORDER_SIZE_USD);
-    orderSize = Math.max(orderSize, CONFIG.MIN_ORDER_SIZE_USD);
-    
-    // 如果深度不够最小金额，返回 0
-    if (maxByDepth < CONFIG.MIN_ORDER_SIZE_USD) {
-        return 0;
-    }
+    // 只限制最大值，不限制最小值
+    const orderSize = Math.min(maxByDepth, CONFIG.MAX_ORDER_SIZE_USD);
     
     return orderSize;
 };
@@ -451,22 +446,31 @@ export const executeArbitrage = async (
             const scale = (CONFIG.MAX_ORDER_SIZE_USD * 2) / totalCostNeeded;
             upOrderSize = upCostNeeded * scale;
             downOrderSize = downCostNeeded * scale;
-        } else if (totalCostNeeded < CONFIG.MIN_ORDER_SIZE_USD * 2) {
-            // 太小，跳过
-            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         } else {
             upOrderSize = upCostNeeded;
             downOrderSize = downCostNeeded;
         }
+        
+        // 计算预期利润，如果太小就跳过
+        const finalShares = Math.min(upOrderSize / opportunity.upAskPrice, downOrderSize / opportunity.downAskPrice);
+        const finalCost = upOrderSize + downOrderSize;
+        const expectedProfitCheck = finalShares - finalCost;  // 套利利润 = 配对shares数 - 总成本
+        
+        if (expectedProfitCheck < CONFIG.MIN_PROFIT_USD) {
+            Logger.debug(`⏭️ ${crossTag} 利润太小: $${expectedProfitCheck.toFixed(3)} < $${CONFIG.MIN_PROFIT_USD}`);
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
     } else if (action === 'buy_up_only') {
         upOrderSize = calculateOrderSize(opportunity.upAskSize, opportunity.upAskPrice);
-        if (upOrderSize === 0) {
+        // 深度太小（< 1 share）就跳过
+        if (upOrderSize < 0.01) {
             Logger.warning(`❌ Up 深度不足: ${opportunity.upAskSize.toFixed(0)}`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
         downOrderSize = calculateOrderSize(opportunity.downAskSize, opportunity.downAskPrice);
-        if (downOrderSize === 0) {
+        // 深度太小（< 1 share）就跳过
+        if (downOrderSize < 0.01) {
             Logger.warning(`❌ Down 深度不足: ${opportunity.downAskSize.toFixed(0)}`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
@@ -560,10 +564,24 @@ export const executeArbitrage = async (
     
     // 打印执行结果
     const success = upResult.success || downResult.success;
+    const crossTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
+    const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
+    
     if (success) {
-        const crossTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
-        const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
-        Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+        // 检查是否部分成交（buy_both 时只有一边成功）
+        if (action === 'buy_both') {
+            if (upResult.success && !downResult.success) {
+                Logger.warning(`⚠️ ${modeTag} ${crossTag} 部分成交: Up ✅ ${upResult.filled.toFixed(0)} | Down ❌ 失败 | 需要后续补仓 Down`);
+            } else if (!upResult.success && downResult.success) {
+                Logger.warning(`⚠️ ${modeTag} ${crossTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)} | 需要后续补仓 Up`);
+            } else {
+                // 两边都成功
+                Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+            }
+        } else {
+            // 单边买入
+            Logger.arbitrage(`${modeTag} ${crossTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)}`);
+        }
     }
     
     return {
