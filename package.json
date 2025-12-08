@@ -8,11 +8,13 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
+    "dev:reset": "ts-node src/index.ts --reset",
     "scan": "ts-node src/scan.ts",
     "test-order": "ts-node src/testOrder.ts",
     "sell-all": "ts-node src/scripts/sell-all.ts",
     "redeem-all": "ts-node src/scripts/redeem-all.ts",
-    "approve": "ts-node src/scripts/approve.ts"
+    "approve": "ts-node src/scripts/approve.ts",
+    "clear-data": "ts-node src/scripts/clear-data.ts"
   },
   "dependencies": {
     "@polymarket/clob-client": "^4.4.0",

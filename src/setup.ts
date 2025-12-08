@@ -72,6 +72,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '',
         '# ========== 模式 ==========',
         `SIMULATION_MODE=${config.SIMULATION_MODE || 'true'}`,
+        `CLEAR_DATA_ON_START=${config.CLEAR_DATA_ON_START || 'false'}`,
         '',
         '# ========== 市场开关（0=关闭，1=开启）==========',
         `ENABLE_15MIN=${config.ENABLE_15MIN || '1'}`,
@@ -143,6 +144,12 @@ const main = async () => {
     const simMode = await question('启用模拟模式？(y/n，默认 y): ');
     config.SIMULATION_MODE = simMode.toLowerCase() === 'n' ? 'false' : 'true';
     
+    // ===== 清除历史数据 =====
+    log.title('🧹 数据选项');
+    log.info('启用后每次启动会清除历史数据，从零开始');
+    const clearData = await question('每次启动清除历史数据？(y/n，默认 n): ');
+    config.CLEAR_DATA_ON_START = clearData.toLowerCase() === 'y' ? 'true' : 'false';
+    
     // ===== 市场开关 =====
     log.title('📊 市场选择');
     log.info('可以选择只开启某个时间段的市场');
@@ -190,6 +197,7 @@ const main = async () => {
     console.log('');
     console.log(`  钱包: ${config.PROXY_WALLET || '未设置'}`);
     console.log(`  模式: ${config.SIMULATION_MODE === 'true' ? '🔵 模拟' : '🔴 真实交易'}`);
+    console.log(`  启动清数据: ${config.CLEAR_DATA_ON_START === 'true' ? '✅ 是' : '❌ 否'}`);
     console.log(`  15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);

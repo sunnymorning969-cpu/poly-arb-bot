@@ -66,6 +66,9 @@ export const CONFIG = {
     // 模拟模式（true=不实际下单）
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true',
     
+    // 启动时清除历史数据（true=从零开始）
+    CLEAR_DATA_ON_START: process.env.CLEAR_DATA_ON_START === 'true',
+    
     // ========== 链配置 ==========
     CHAIN_ID: 137,
 };

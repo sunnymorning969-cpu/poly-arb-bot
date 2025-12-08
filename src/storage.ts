@@ -217,6 +217,27 @@ export const closeStorage = async (): Promise<void> => {
 };
 
 /**
+ * 清除所有数据（重新开始）
+ */
+export const clearStorage = (): void => {
+    cachedData = {
+        positions: [],
+        settlementHistory: [],
+        stats: {
+            totalTrades: 0,
+            successfulTrades: 0,
+            totalProfit: 0,
+            totalCost: 0,
+            lastUpdate: Date.now(),
+        },
+        lastSave: Date.now(),
+    };
+    isDirty = true;
+    saveData();
+    Logger.success('🧹 已清除所有历史数据，从零开始');
+};
+
+/**
  * 获取存储状态
  */
 export const getStorageStatus = (): {
@@ -246,6 +267,7 @@ export default {
     getStoredStats,
     updateStats,
     closeStorage,
+    clearStorage,
     getStorageStatus,
 };
 

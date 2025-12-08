@@ -13,7 +13,7 @@ import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWeb
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifyBatchSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
-import { initStorage, closeStorage, getStorageStatus } from './storage';
+import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
 
 // 统计数据
@@ -169,10 +169,21 @@ const selectOpportunities = (
 const mainLoop = async () => {
     printBanner();
     
+    // 检查启动参数或配置项
+    const args = process.argv.slice(2);
+    const shouldReset = args.includes('--reset') || args.includes('-r') || CONFIG.CLEAR_DATA_ON_START;
+    
     // 初始化数据存储
     try {
         await initStorage();
-        loadPositionsFromStorage();  // 加载之前的仓位
+        
+        // 如果配置了清除数据或有 --reset 参数，清除历史数据
+        if (shouldReset) {
+            clearStorage();
+            Logger.success('🧹 已清除历史数据，从零开始');
+        } else {
+            loadPositionsFromStorage();  // 加载之前的仓位
+        }
     } catch (error) {
         Logger.error(`存储初始化失败: ${error}`);
         return;
