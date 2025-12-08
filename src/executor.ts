@@ -22,18 +22,27 @@ let wallet: ethers.Wallet | null = null;
 // 记录上次下单时间（同一市场必须冷却）
 const lastTradeTime = new Map<string, number>();
 
-// Polygon 合约地址
+// 使用 getAddress 确保 checksum 正确
+const toChecksumAddress = (addr: string): string => {
+    try {
+        return ethers.utils.getAddress(addr.toLowerCase());
+    } catch {
+        return addr;
+    }
+};
+
+// Polygon 合约地址（确保 checksum 正确）
 const CONTRACTS = {
     // USDC on Polygon (PoS Bridge - 旧版)
-    USDC_E: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+    USDC_E: toChecksumAddress('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
     // USDC on Polygon (Native - 新版)
-    USDC: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    USDC: toChecksumAddress('0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),
     
     // Polymarket 核心合约
-    CTF_EXCHANGE: '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C',        // 主交易所
-    NEG_RISK_CTF_EXCHANGE: '0xC5d563A36AE78145C45a50134d48A1215220f80a', // 负风险交易所
-    NEG_RISK_ADAPTER: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',     // 负风险适配器
-    CONDITIONAL_TOKENS: '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045',   // 条件代币合约
+    CTF_EXCHANGE: toChecksumAddress('0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C'),        // 主交易所
+    NEG_RISK_CTF_EXCHANGE: toChecksumAddress('0xC5d563A36AE78145C45a50134d48A1215220f80a'), // 负风险交易所
+    NEG_RISK_ADAPTER: toChecksumAddress('0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296'),     // 负风险适配器
+    CONDITIONAL_TOKENS: toChecksumAddress('0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'),   // 条件代币合约
 };
 
 // ERC20 ABI (只需要 approve 和 allowance)

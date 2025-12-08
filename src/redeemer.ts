@@ -8,10 +8,19 @@ import axios from 'axios';
 import CONFIG from './config';
 import Logger from './logger';
 
-// 合约地址
+// 使用 getAddress 确保 checksum 正确
+const toChecksumAddress = (addr: string): string => {
+    try {
+        return ethers.utils.getAddress(addr.toLowerCase());
+    } catch {
+        return addr;
+    }
+};
+
+// 合约地址（确保 checksum 正确）
 const CONTRACTS = {
-    USDC_E: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-    CONDITIONAL_TOKENS: '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045',
+    USDC_E: toChecksumAddress('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
+    CONDITIONAL_TOKENS: toChecksumAddress('0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'),
 };
 
 // CTF 合约 ABI（只需要 redeemPositions）
@@ -274,3 +283,4 @@ export default {
     redeemAllPositions,
     checkAndRedeem,
 };
+

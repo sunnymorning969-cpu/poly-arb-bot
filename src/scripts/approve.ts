@@ -1,12 +1,11 @@
 /**
- * USDC/USDC.e 授权脚本
+ * USDC/USDC.e 及 CTF 授权脚本
  * 
  * 运行: npx ts-node src/scripts/approve.ts
  * 
- * 授权 USDC 和 USDC.e 给 Polymarket 合约，用于：
- * - 交易下单
- * - 卖出持仓
- * - 赎回仓位
+ * 授权内容：
+ * 1. USDC/USDC.e 给 Polymarket 合约（用于买入）
+ * 2. CTF Token 给 Exchange（用于卖出）
  */
 
 import * as dotenv from 'dotenv';
@@ -21,18 +20,28 @@ const CONFIG = {
     RPC_URL: process.env.RPC_URL || 'https://polygon-rpc.com',
 };
 
-// 代币地址
-const TOKENS = {
-    USDC_E: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',  // USDC.e (PoS Bridge)
-    USDC: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',    // Native USDC
+// 使用 getAddress 确保 checksum 正确
+const toChecksumAddress = (addr: string): string => {
+    try {
+        return ethers.utils.getAddress(addr.toLowerCase());
+    } catch {
+        return addr;
+    }
 };
 
-// Polymarket 合约地址
+// 代币地址（转换为正确的 checksum 格式）
+const TOKENS = {
+    USDC_E: toChecksumAddress('0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),  // USDC.e (PoS Bridge)
+    USDC: toChecksumAddress('0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),    // Native USDC
+};
+
+// Polymarket 合约地址（转换为正确的 checksum 格式）
 const CONTRACTS = {
-    CTF_EXCHANGE: '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C',        // 主交易所
-    NEG_RISK_CTF_EXCHANGE: '0xC5d563A36AE78145C45a50134d48A1215220f80a', // 负风险交易所
-    NEG_RISK_ADAPTER: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',     // 负风险适配器
-    CONDITIONAL_TOKENS: '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045',   // 条件代币合约
+    CTF_EXCHANGE: toChecksumAddress('0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8DB438C'),        // 主交易所
+    NEG_RISK_CTF_EXCHANGE: toChecksumAddress('0xC5d563A36AE78145C45a50134d48A1215220f80a'), // 负风险交易所
+    NEG_RISK_ADAPTER: toChecksumAddress('0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296'),     // 负风险适配器
+    CONDITIONAL_TOKENS: toChecksumAddress('0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'),   // 条件代币合约
+    POLYMARKET_EXCHANGE: toChecksumAddress('0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'),  // 卖出用交易所
 };
 
 // ERC20 ABI
@@ -42,6 +51,12 @@ const ERC20_ABI = [
     'function balanceOf(address account) view returns (uint256)',
     'function decimals() view returns (uint8)',
     'function symbol() view returns (string)',
+];
+
+// CTF (ERC1155) ABI
+const CTF_ABI = [
+    'function setApprovalForAll(address operator, bool approved) external',
+    'function isApprovedForAll(address account, address operator) view returns (bool)',
 ];
 
 // 无限授权额度
@@ -159,12 +174,56 @@ const getTokenBalance = async (
 };
 
 /**
+ * 授权 CTF Token（用于卖出持仓）
+ */
+const approveCTFToken = async (wallet: ethers.Wallet): Promise<boolean> => {
+    try {
+        const ctf = new ethers.Contract(CONTRACTS.CONDITIONAL_TOKENS, CTF_ABI, wallet);
+        
+        // 检查是否已授权
+        const isApproved = await ctf.isApprovedForAll(CONFIG.PROXY_WALLET, CONTRACTS.POLYMARKET_EXCHANGE);
+        
+        if (isApproved) {
+            log.success('CTF Token → Exchange: 已授权 ✓ (可卖出)');
+            return true;
+        }
+        
+        log.info('CTF Token → Exchange: 授权中... (卖出需要)');
+        
+        // 获取 gas price
+        const feeData = await wallet.provider.getFeeData();
+        const gasPrice = feeData.gasPrice || feeData.maxFeePerGas;
+        const adjustedGasPrice = gasPrice ? gasPrice.mul(150).div(100) : undefined;
+        
+        const tx = await ctf.setApprovalForAll(CONTRACTS.POLYMARKET_EXCHANGE, true, {
+            gasLimit: 100000,
+            gasPrice: adjustedGasPrice,
+        });
+        
+        log.dim(`交易: ${tx.hash}`);
+        
+        const receipt = await tx.wait();
+        
+        if (receipt.status === 1) {
+            log.success('CTF Token → Exchange: 授权成功 ✓ (可卖出)');
+            return true;
+        } else {
+            log.error('CTF Token → Exchange: 授权失败');
+            return false;
+        }
+    } catch (error: any) {
+        log.error(`CTF Token 授权失败: ${error.message || error}`);
+        return false;
+    }
+};
+
+/**
  * 主函数
  */
 const main = async () => {
     console.log('');
     console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║           🔐 Polymarket USDC 授权工具                      ║');
+    console.log('║           🔐 Polymarket 授权工具                           ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
     console.log('');
     
@@ -190,6 +249,23 @@ const main = async () => {
         log.warning('MATIC 余额较低，可能无法完成授权交易');
     }
     
+    let success = 0;
+    let failed = 0;
+    
+    // ===== 1. CTF Token 授权（用于卖出）=====
+    log.info('【1/2】CTF Token 授权 (卖出用)...');
+    console.log('');
+    
+    const ctfResult = await approveCTFToken(wallet);
+    if (ctfResult) success++; else failed++;
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // ===== 2. USDC 授权（用于买入）=====
+    console.log('');
+    log.info('【2/2】USDC 授权 (买入用)...');
+    console.log('');
+    
     // 授权列表
     const approvals = [
         // USDC.e 授权
@@ -203,12 +279,6 @@ const main = async () => {
         { token: TOKENS.USDC, tokenName: 'USDC', spender: CONTRACTS.NEG_RISK_ADAPTER, spenderName: 'Neg Risk Adapter' },
         { token: TOKENS.USDC, tokenName: 'USDC', spender: CONTRACTS.CONDITIONAL_TOKENS, spenderName: 'CTF Contract' },
     ];
-    
-    log.info('开始授权检查...');
-    console.log('');
-    
-    let success = 0;
-    let failed = 0;
     
     for (const { token, tokenName, spender, spenderName } of approvals) {
         const result = await approveToken(wallet, token, tokenName, spender, spenderName);
@@ -235,3 +305,4 @@ main().catch((error) => {
     log.error(`执行出错: ${error.message || error}`);
     process.exit(1);
 });
+

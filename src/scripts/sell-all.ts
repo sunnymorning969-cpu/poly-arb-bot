@@ -61,7 +61,7 @@ const initClient = async (): Promise<ClobClient> => {
         CONFIG.PROXY_WALLET
     );
     
-    await client.createOrDeriveApiCreds();
+    await client.createOrDeriveApiKey();
     return client;
 };
 
@@ -233,3 +233,4 @@ main().catch((error) => {
     log.error(`执行出错: ${error.message || error}`);
     process.exit(1);
 });
+
