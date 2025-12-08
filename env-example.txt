@@ -8,3 +8,4 @@ PROXY_WALLET=你的钱包地址
 # ========== 可选配置 ==========
 # RPC_URL=https://polygon-rpc.com
 # SIMULATION_MODE=true
+

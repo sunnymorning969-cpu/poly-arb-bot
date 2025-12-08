@@ -15,6 +15,9 @@ let lastSendTime = 0;
 let messageQueue: string[] = [];
 let isProcessingQueue = false;
 
+// 追踪每种事件类型的结算次数
+const settlementCounters: Map<string, number> = new Map();  // key: "15min" 或 "1hr"
+
 /**
  * 发送 Telegram 消息（带频率限制）
  */
@@ -463,6 +466,75 @@ ${profitEmoji} <b>事件结束总结</b>
 };
 
 /**
+ * 发送单个事件结算通知
+ * 每个事件单独发送，并标记是该事件类型的第几次结算
+ */
+export const notifySingleSettlement = async (
+    result: SettlementResult,
+    overallStats: {
+        totalSettled: number;
+        totalProfit: number;
+        winCount: number;
+        lossCount: number;
+        winRate: number;
+    }
+): Promise<void> => {
+    // 判断时间组
+    const is15min = result.position.slug.includes('15m') || result.position.slug.includes('15min');
+    const timeGroup = is15min ? '15min' : '1hr';
+    const timeGroupLabel = is15min ? '15分钟' : '1小时';
+    const groupIcon = is15min ? '⏱️' : '⏰';
+    
+    // 增加并获取该类型的结算次数
+    const currentCount = (settlementCounters.get(timeGroup) || 0) + 1;
+    settlementCounters.set(timeGroup, currentCount);
+    
+    // 判断资产类型
+    const isBtcUp = result.position.slug.includes('btc') || result.position.slug.includes('bitcoin');
+    const isEthUp = result.position.slug.includes('eth') || result.position.slug.includes('ethereum');
+    const asset = isBtcUp ? 'BTC' : (isEthUp ? 'ETH' : 'Unknown');
+    
+    // 结果信息
+    const outcomeEmoji = result.outcome === 'up' ? '⬆️' : '⬇️';
+    const outcomeLabel = result.outcome === 'up' ? 'UP' : 'DOWN';
+    const profitEmoji = result.profit >= 0 ? '🎉' : '😢';
+    const profitSign = result.profit >= 0 ? '+' : '';
+    const profitPercent = result.totalCost > 0 ? (result.profit / result.totalCost) * 100 : 0;
+    
+    // 累计统计
+    const overallProfitEmoji = overallStats.totalProfit >= 0 ? '📈' : '📉';
+    
+    const message = `
+${profitEmoji} <b>${timeGroupLabel}场 第${currentCount}次结算</b>
+
+${groupIcon} <b>${asset} ${timeGroupLabel}</b>
+   结果: ${outcomeEmoji} <b>${outcomeLabel} 获胜</b>
+
+💰 <b>本次盈亏:</b>
+   • 成本: $${result.totalCost.toFixed(2)}
+   • 收回: $${result.payout.toFixed(2)}
+   • 盈亏: <b>${profitSign}$${result.profit.toFixed(2)}</b> (${profitSign}${profitPercent.toFixed(1)}%)
+
+━━━━━━━━━━━━━━━
+<b>📊 累计统计:</b>
+   • 已结算: ${overallStats.totalSettled} 个事件
+   • 胜率: ${overallStats.winRate.toFixed(1)}% (${overallStats.winCount}胜/${overallStats.lossCount}负)
+   • ${overallProfitEmoji} <b>累计盈亏: ${overallStats.totalProfit >= 0 ? '+' : ''}$${overallStats.totalProfit.toFixed(2)}</b>
+
+${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : ''}
+`.trim();
+
+    await sendTelegramMessage(message, true);  // 高优先级
+};
+
+/**
+ * 重置结算计数器（可选，用于新一天开始时重置）
+ */
+export const resetSettlementCounters = (): void => {
+    settlementCounters.clear();
+};
+
+/**
  * 发送批量结算通知（合并同时结算的多个事件）
  * 避免消息顺序混乱
  */
@@ -606,7 +678,10 @@ export default {
     notifyPositionReport,
     notifyEventSummary,
     notifyBatchSettlement,
+    notifySingleSettlement,
+    resetSettlementCounters,
     notifyRunningStats,
 };
+
 
 

@@ -11,7 +11,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
-import { notifyBotStarted, notifyBatchSettlement, notifyRunningStats } from './telegram';
+import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
@@ -163,9 +163,10 @@ const selectOpportunities = (
         const isBtcDown = opp.downMarketSlug?.includes('btc') || opp.downMarketSlug?.includes('bitcoin');
         const upSource = isBtcUp ? 'BTC' : 'ETH';
         const downSource = isBtcDown ? 'BTC' : 'ETH';
-        const sourceInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : opp.timeGroup;
+        const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
         
-        Logger.success(`${actionEmoji}${crossPoolTag} ${sourceInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
+        // 始终显示时间场 + 组合信息
+        Logger.success(`${actionEmoji}${crossPoolTag} ${opp.timeGroup} ${pairInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
     }
     
     return selected;
@@ -334,10 +335,12 @@ const mainLoop = async () => {
             if (now - lastPriceLog >= 15000) {
                 const settledResults = await checkAndSettleExpired();  // 异步获取真实结果
                 
-                // 如果有结算结果，发送批量通知
+                // 如果有结算结果，逐个发送通知
                 if (settledResults.length > 0) {
-                    const overallStats = getOverallStats();
-                    await notifyBatchSettlement(settledResults, overallStats);
+                    for (const result of settledResults) {
+                        const overallStats = getOverallStats();  // 每次获取最新统计
+                        await notifySingleSettlement(result, overallStats);
+                    }
                 }
                 
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
@@ -352,8 +355,10 @@ const mainLoop = async () => {
                 // 先检查结算
                 const moreSettled = await checkAndSettleExpired();
                 if (moreSettled.length > 0) {
-                    const overallStats = getOverallStats();
-                    await notifyBatchSettlement(moreSettled, overallStats);
+                    for (const result of moreSettled) {
+                        const overallStats = getOverallStats();
+                        await notifySingleSettlement(result, overallStats);
+                    }
                 }
                 
                 // 发送运行统计
@@ -403,5 +408,6 @@ mainLoop().catch(error => {
     Logger.error(`机器人崩溃: ${error}`);
     process.exit(1);
 });
+
 
 
