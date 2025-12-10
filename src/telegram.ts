@@ -61,8 +61,11 @@ const doSend = async (message: string): Promise<boolean> => {
         });
         lastSendTime = Date.now();
         return true;
-    } catch (error) {
-        // 静默处理，避免刷屏
+    } catch (error: any) {
+        // 启动通知失败时输出错误
+        if (message.includes('机器人') && message.includes('启动')) {
+            console.error(`[Telegram] 启动通知发送失败:`, error.message || error);
+        }
         return false;
     }
 };
@@ -198,6 +201,11 @@ ${isBuyBoth ? `\n💰 <b>套利利润:</b> $${result.expectedProfit.toFixed(2)}`
  * 发送机器人启动通知（高优先级）
  */
 export const notifyBotStarted = async (): Promise<void> => {
+    if (!CONFIG.TELEGRAM_ENABLED) {
+        console.log('[Telegram] 启动通知跳过：TELEGRAM_ENABLED=false');
+        return;
+    }
+    
     const message = `
 🤖 <b>套利机器人 v3.0 已启动！</b>
 
@@ -216,7 +224,10 @@ export const notifyBotStarted = async (): Promise<void> => {
 🔍 监控 BTC/ETH Up/Down (15min + 1hr)...
 `.trim();
 
-    await sendTelegramMessage(message, true);  // 高优先级，立即发送
+    const success = await sendTelegramMessage(message, true);  // 高优先级，立即发送
+    if (success) {
+        console.log('[Telegram] ✅ 启动通知已发送');
+    }
 };
 
 /**

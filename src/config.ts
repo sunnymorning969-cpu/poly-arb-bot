@@ -102,10 +102,11 @@ export const CONFIG = {
     STOP_LOSS_CHECK_INTERVAL_MS: parseInt(process.env.STOP_LOSS_CHECK_INTERVAL_MS || '1000'),
     
     // 风险比例阈值（低于阈值的次数占总检查次数的比例，超过此值触发止损）
-    // 支持两种输入格式：0.7 或 70 都表示 70%
+    // 支持两种输入格式：0.7 或 70 都表示 70%，1 表示 1%
     STOP_LOSS_RISK_RATIO: (() => {
         const val = parseFloat(process.env.STOP_LOSS_RISK_RATIO || '0.7');
-        return val > 1 ? val / 100 : val;  // 如果 > 1，自动转换为小数
+        // 如果 >= 1，视为百分比输入（1=1%, 70=70%），自动转换为小数
+        return val >= 1 ? val / 100 : val;
     })(),
     
     // 止损模式：'sell' = 平仓止损，'hedge' = 对冲补仓保本

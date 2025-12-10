@@ -444,11 +444,14 @@ const mainLoop = async () => {
             }
             
             // 止损检查（高频，由止损模块内部控制频率）
-            const stopLossSignals = checkStopLossSignals();
-            if (stopLossSignals.length > 0) {
-                for (const signal of stopLossSignals) {
-                    Logger.warning(`🚨 触发止损: ${signal.timeGroup} - ${signal.reason}`);
-                    await executeStopLoss(executeSell, signal);
+            // 注意：hedge 模式下不执行平仓，只依赖对冲逻辑
+            if (CONFIG.STOP_LOSS_MODE === 'sell') {
+                const stopLossSignals = checkStopLossSignals();
+                if (stopLossSignals.length > 0) {
+                    for (const signal of stopLossSignals) {
+                        Logger.warning(`🚨 触发止损: ${signal.timeGroup} - ${signal.reason}`);
+                        await executeStopLoss(executeSell, signal);
+                    }
                 }
             }
             
