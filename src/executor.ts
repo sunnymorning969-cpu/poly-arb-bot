@@ -13,7 +13,7 @@ import { SignatureType } from '@polymarket/order-utils';
 import CONFIG from './config';
 import Logger from './logger';
 import { ArbitrageOpportunity } from './scanner';
-import { updatePosition, getImbalance, getPositionStats } from './positions';
+import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis } from './positions';
 
 let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
@@ -618,9 +618,9 @@ export const executeArbitrage = async (
     const timeTag = opportunity.timeGroup || '';
     
     if (success) {
-        // 获取当前累计成本
-        const posStats = getPositionStats();
-        const cumulativeCost = posStats.totalCost;
+        // 获取当前时间组的累计成本（而不是全部仓位）
+        const groupAnalysis = opportunity.timeGroup ? getGroupCostAnalysis(opportunity.timeGroup) : null;
+        const groupCost = groupAnalysis?.totalCost || 0;
         
         // 检查是否部分成交（buy_both 时只有一边成功）
         if (action === 'buy_both') {
@@ -629,12 +629,17 @@ export const executeArbitrage = async (
             } else if (!upResult.success && downResult.success) {
                 Logger.warning(`⚠️ ${modeTag} ${timeTag} ${poolTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)} | 需要后续补仓 Up`);
             } else {
-                // 两边都成功
-                Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)} | 累计 $${cumulativeCost.toFixed(2)}`);
+                // 两边都成功 - 显示详细成本明细
+                const upCostStr = `${upResult.filled.toFixed(1)}×$${upResult.avgPrice.toFixed(2)}`;
+                const downCostStr = `${downResult.filled.toFixed(1)}×$${downResult.avgPrice.toFixed(2)}`;
+                Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: Up(${upCostStr}) Down(${downCostStr}) | 本次$${totalCost.toFixed(2)} | 利润$${expectedProfit.toFixed(2)} | 本轮$${groupCost.toFixed(2)}`);
             }
         } else {
             // 单边买入
-            Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: Up ${upResult.filled.toFixed(0)} | Down ${downResult.filled.toFixed(0)} | 成本 $${totalCost.toFixed(2)} | 预期利润 $${expectedProfit.toFixed(2)} | 累计 $${cumulativeCost.toFixed(2)}`);
+            const filledStr = upResult.filled > 0 
+                ? `Up ${upResult.filled.toFixed(1)}×$${upResult.avgPrice.toFixed(2)}`
+                : `Down ${downResult.filled.toFixed(1)}×$${downResult.avgPrice.toFixed(2)}`;
+            Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: ${filledStr} | 本次$${totalCost.toFixed(2)} | 本轮$${groupCost.toFixed(2)}`);
         }
     }
     
