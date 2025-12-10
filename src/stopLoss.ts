@@ -23,7 +23,6 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
 import { notifyStopLoss } from './telegram';
-import { isHedgeCompleted } from './hedging';
 import { isHedgeCompleted, isHedging } from './hedging';
 
 // 止损状态追踪
