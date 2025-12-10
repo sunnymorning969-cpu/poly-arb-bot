@@ -503,23 +503,43 @@ export const executeArbitrage = async (
         downShares = targetShares;
         
     } else if (action === 'buy_up_only') {
-        // 单边买入：基于深度和金额限制计算 shares
-        const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
-        const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
-        upShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        // 对冲交易：100% 深度，无金额限制
+        // 普通交易：90% 深度，有金额限制
+        if (opportunity.isHedge) {
+            upShares = opportunity.upAskSize;  // 对冲：吃掉全部深度
+        } else {
+            const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
+            const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
+            upShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        }
         
         if (upShares < 1) {
-            Logger.warning(`❌ Up 深度不足: ${opportunity.upAskSize.toFixed(0)}`);
+            // 对冲时打印更详细的深度信息
+            if (opportunity.isHedge) {
+                Logger.warning(`⚠️ 对冲等待深度: Up 当前深度=${opportunity.upAskSize.toFixed(1)} @ $${opportunity.upAskPrice.toFixed(2)}`);
+            } else {
+                Logger.warning(`❌ Up 深度不足: ${opportunity.upAskSize.toFixed(0)}`);
+            }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
-        // 单边买入：基于深度和金额限制计算 shares
-        const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
-        const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;
-        downShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        // 对冲交易：100% 深度，无金额限制
+        // 普通交易：90% 深度，有金额限制
+        if (opportunity.isHedge) {
+            downShares = opportunity.downAskSize;  // 对冲：吃掉全部深度
+        } else {
+            const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
+            const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;
+            downShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        }
         
         if (downShares < 1) {
-            Logger.warning(`❌ Down 深度不足: ${opportunity.downAskSize.toFixed(0)}`);
+            // 对冲时打印更详细的深度信息
+            if (opportunity.isHedge) {
+                Logger.warning(`⚠️ 对冲等待深度: Down 当前深度=${opportunity.downAskSize.toFixed(1)} @ $${opportunity.downAskPrice.toFixed(2)}`);
+            } else {
+                Logger.warning(`❌ Down 深度不足: ${opportunity.downAskSize.toFixed(0)}`);
+            }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     }

@@ -160,16 +160,17 @@ const selectOpportunities = (
     const selected: ArbitrageOpportunity[] = [];
     
     for (const opp of opportunities) {
-        if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
-        
-        // ============ 止损/对冲检查（最高优先级）============
-        const pauseCheck = shouldPauseTrading(opp.timeGroup);
-        
-        // 如果是对冲交易，直接执行，不需要其他检查
+        // 如果是对冲交易，直接执行，不受并行数量限制
         if (opp.isHedge) {
             selected.push(opp);
             continue;
         }
+        
+        // 普通交易受并行数量限制
+        if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
+        
+        // ============ 止损/对冲检查（最高优先级）============
+        const pauseCheck = shouldPauseTrading(opp.timeGroup);
         
         if (pauseCheck.pause) {
             continue;  // 对冲已完成，静默等待
