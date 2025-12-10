@@ -9,7 +9,7 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
@@ -161,12 +161,30 @@ const selectOpportunities = (
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
-        // ============ 止损暂停检查（最高优先级）============
+        // ============ 止损/对冲检查（最高优先级）============
         const pauseCheck = shouldPauseTrading(opp.timeGroup);
+        
+        // 如果是对冲交易，跳过止损检查
+        if (opp.isHedge) {
+            // 对冲交易优先执行
+            selected.push(opp);
+            Logger.warning(`🛡️ ${opp.timeGroup} 对冲补仓: BTC Down + ETH Up | 合计:$${opp.combinedCost.toFixed(3)}`);
+            continue;
+        }
+        
         if (pauseCheck.pause) {
             // 只在第一次遇到时打印一次
             if (selected.length === 0) {
                 Logger.warning(`🛑 ${opp.timeGroup} 暂停开仓: ${pauseCheck.reason}`);
+            }
+            continue;
+        }
+        
+        // 对冲模式：跳过常规套利，等待对冲机会
+        if (pauseCheck.shouldHedge) {
+            // 只在第一次遇到时打印一次
+            if (selected.length === 0) {
+                Logger.warning(`🛡️ ${opp.timeGroup} 进入对冲模式，跳过常规套利`);
             }
             continue;
         }
@@ -329,7 +347,22 @@ const mainLoop = async () => {
             scansSinceLog++;
             
             // 静默扫描（不输出每次扫描日志）
-            const opportunities = await scanArbitrageOpportunities(true);
+            let opportunities = await scanArbitrageOpportunities(true);
+            
+            // 检查是否需要对冲补仓（支持多个时间组）
+            if (CONFIG.STOP_LOSS_MODE === 'hedge') {
+                for (const timeGroup of ['15min', '1hr'] as const) {
+                    const pauseCheck = shouldPauseTrading(timeGroup);
+                    if (pauseCheck.shouldHedge) {
+                        // 生成对冲机会
+                        const hedgeOpps = generateHedgeOpportunities(timeGroup);
+                        if (hedgeOpps.length > 0) {
+                            opportunities = hedgeOpps;  // 对冲优先
+                            break;
+                        }
+                    }
+                }
+            }
             
             if (opportunities.length > 0) {
                 stats.opportunitiesFound += opportunities.length;

@@ -23,6 +23,7 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
 import { notifyStopLoss } from './telegram';
+import { isHedgeCompleted, isHedging } from './hedging';
 
 // 止损状态追踪
 interface StopLossState {
@@ -528,18 +529,45 @@ export const clearTriggeredStopLoss = (timeGroup?: TimeGroup): void => {
  * 
  * 只在真正触发止损时才暂停，不做预警暂停
  * 触发条件由用户配置：比例 >= STOP_LOSS_RISK_RATIO 且 次数 >= STOP_LOSS_MIN_TRIGGER_COUNT
+ * 
+ * 模式说明：
+ * - sell 模式：触发后暂停交易，执行平仓
+ * - hedge 模式：触发后停止套利，只进行对冲补仓，保本后等待结束
  */
-export const shouldPauseTrading = (timeGroup: TimeGroup): { pause: boolean; reason: string } => {
+export const shouldPauseTrading = (timeGroup: TimeGroup): { 
+    pause: boolean; 
+    reason: string;
+    shouldHedge: boolean;  // 是否应该进入对冲模式（仅补仓，不套利）
+} => {
     if (!CONFIG.STOP_LOSS_ENABLED) {
-        return { pause: false, reason: '' };
+        return { pause: false, reason: '', shouldHedge: false };
     }
     
-    // 只在已触发止损时才暂停
+    // 对冲模式：检查对冲是否已完成
+    if (CONFIG.STOP_LOSS_MODE === 'hedge') {
+        // 对冲已完成，暂停所有交易，等待事件结束
+        if (isHedgeCompleted(timeGroup)) {
+            return { pause: true, reason: '对冲已完成，等待事件结束', shouldHedge: false };
+        }
+        
+        // 正在对冲中，继续对冲（不套利）
+        if (isHedging(timeGroup)) {
+            return { pause: false, reason: '对冲进行中', shouldHedge: true };
+        }
+    }
+    
+    // 检查是否已触发止损
     if (triggeredStopLoss.has(timeGroup)) {
-        return { pause: true, reason: '止损已触发，暂停开仓' };
+        if (CONFIG.STOP_LOSS_MODE === 'hedge') {
+            // 对冲模式：停止套利，开始对冲补仓
+            return { pause: false, reason: '风险触发，停止套利，开始对冲', shouldHedge: true };
+        } else {
+            // 平仓模式：暂停交易
+            return { pause: true, reason: '止损已触发，暂停开仓', shouldHedge: false };
+        }
     }
     
-    return { pause: false, reason: '' };
+    return { pause: false, reason: '', shouldHedge: false };
 };
 
 /**

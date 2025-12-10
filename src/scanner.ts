@@ -13,6 +13,7 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
 import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, recordArbitrageOpportunity } from './stopLoss';
+import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, printHedgeStatus } from './hedging';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -93,6 +94,8 @@ export interface ArbitrageOpportunity {
     };
     // 交易建议
     tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait';
+    // 对冲标记
+    isHedge?: boolean;  // 是否为对冲补仓交易
 }
 
 // API 响应接口
@@ -765,10 +768,236 @@ export const getDebugInfo = (): string => {
     return `WS有${wsBooks}个book, 需要${mapTokens}个, 全部匹配✅`;
 };
 
+/**
+ * 生成同池对冲补仓机会
+ * 
+ * 同池对冲策略：
+ * - BTC 池：持有 BTC Up → 补 BTC Down → BTC 池保本
+ * - ETH 池：持有 ETH Down → 补 ETH Up → ETH 池保本
+ * 
+ * 每个池子独立对冲，确保无论该池结果如何都能保本
+ */
+export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOpportunity[] => {
+    const opportunities: ArbitrageOpportunity[] = [];
+    
+    // 获取当前持仓汇总
+    const summary = getGroupPositionSummary(timeGroup);
+    
+    if (summary.totalCost === 0) {
+        return opportunities; // 没有持仓，不需要对冲
+    }
+    
+    // 获取市场信息
+    let btcMarket: {
+        conditionId: string;
+        market: CryptoMarket;
+        upToken: MarketToken;
+        downToken: MarketToken;
+        upBook: OrderBookData;
+        downBook: OrderBookData;
+    } | null = null;
+    
+    let ethMarket: typeof btcMarket = null;
+    
+    for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
+        const upBook = orderBookManager.getOrderBook(upToken.token_id);
+        const downBook = orderBookManager.getOrderBook(downToken.token_id);
+        
+        if (!upBook || !downBook) continue;
+        
+        const marketTimeGroup = getTimeGroup(market.slug);
+        if (marketTimeGroup !== timeGroup) continue;
+        
+        const isBtc = market.slug.toLowerCase().includes('btc') || market.slug.toLowerCase().includes('bitcoin');
+        
+        if (isBtc) {
+            btcMarket = { conditionId, market, upToken, downToken, upBook, downBook };
+        } else {
+            ethMarket = { conditionId, market, upToken, downToken, upBook, downBook };
+        }
+    }
+    
+    if (!btcMarket || !ethMarket) {
+        Logger.warning(`🛡️ [${timeGroup}] 对冲失败: 找不到 BTC 或 ETH 市场`);
+        return opportunities;
+    }
+    
+    // 计算需要补多少
+    const hedgeInfo = calculateHedgeNeeded(
+        summary,
+        btcMarket.downBook.bestAsk,  // BTC Down 价格
+        ethMarket.upBook.bestAsk      // ETH Up 价格
+    );
+    
+    if (!hedgeInfo.needHedge) {
+        // 已经保本
+        if (isHedging(timeGroup) && !isHedgeCompleted(timeGroup)) {
+            completeHedging(timeGroup);
+        }
+        printHedgeStatus(timeGroup);
+        return opportunities;
+    }
+    
+    // 启动对冲模式
+    if (!isHedging(timeGroup)) {
+        startHedging(timeGroup);
+    }
+    
+    // 打印对冲需求
+    Logger.warning(`🛡️ [${timeGroup}] 同池对冲:`);
+    if (hedgeInfo.btcDeficit > 0) {
+        Logger.warning(`   BTC池缺口 $${hedgeInfo.btcDeficit.toFixed(2)}, 需补 ${hedgeInfo.btcDownNeeded} BTC Down`);
+    }
+    if (hedgeInfo.ethDeficit > 0) {
+        Logger.warning(`   ETH池缺口 $${hedgeInfo.ethDeficit.toFixed(2)}, 需补 ${hedgeInfo.ethUpNeeded} ETH Up`);
+    }
+    
+    // ========== 生成 BTC 池对冲机会（补 BTC Down）==========
+    if (hedgeInfo.btcDownNeeded > 0) {
+        const btcDownShares = Math.min(
+            hedgeInfo.btcDownNeeded,
+            btcMarket.downBook.bestAskSize,
+            CONFIG.MAX_SHARES_PER_TRADE
+        );
+        
+        if (btcDownShares >= 1) {
+            opportunities.push({
+                conditionId: btcMarket.conditionId,
+                slug: btcMarket.market.slug,
+                title: `${timeGroup} BTC池对冲: 补 BTC Down`,
+                upToken: {
+                    token_id: '',  // 不买 Up
+                    outcome: 'Up',
+                    price: '0',
+                },
+                downToken: {
+                    token_id: btcMarket.downToken.token_id,
+                    outcome: btcMarket.downToken.outcome,
+                    price: btcMarket.downToken.price,
+                },
+                timeGroup,
+                isCrossPool: false,  // 同池操作
+                upMarketSlug: btcMarket.market.slug,
+                downMarketSlug: btcMarket.market.slug,
+                downConditionId: btcMarket.conditionId,
+                upAskPrice: 0,
+                downAskPrice: btcMarket.downBook.bestAsk,
+                upAskSize: 0,
+                downAskSize: btcMarket.downBook.bestAskSize,
+                combinedCost: btcMarket.downBook.bestAsk,
+                profitPercent: 0,
+                maxShares: btcDownShares,
+                endDate: btcMarket.market.end_date_iso,
+                upIsCheap: false,
+                downIsCheap: true,
+                priority: 100,
+                groupAnalysis: {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: 0,
+                    needMoreUp: false,
+                    needMoreDown: true,
+                    predictedAvgCost: 0,
+                    predictedProfit: 0,
+                    worthBuying: true,
+                },
+                eventAnalysis: {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: 0,
+                    needMoreUp: false,
+                    needMoreDown: true,
+                    predictedAvgCost: 0,
+                    predictedProfit: 0,
+                    worthBuying: true,
+                },
+                tradingAction: 'buy_down_only',  // 只补 Down
+                isHedge: true,
+            });
+        }
+    }
+    
+    // ========== 生成 ETH 池对冲机会（补 ETH Up）==========
+    if (hedgeInfo.ethUpNeeded > 0) {
+        const ethUpShares = Math.min(
+            hedgeInfo.ethUpNeeded,
+            ethMarket.upBook.bestAskSize,
+            CONFIG.MAX_SHARES_PER_TRADE
+        );
+        
+        if (ethUpShares >= 1) {
+            opportunities.push({
+                conditionId: ethMarket.conditionId,
+                slug: ethMarket.market.slug,
+                title: `${timeGroup} ETH池对冲: 补 ETH Up`,
+                upToken: {
+                    token_id: ethMarket.upToken.token_id,
+                    outcome: ethMarket.upToken.outcome,
+                    price: ethMarket.upToken.price,
+                },
+                downToken: {
+                    token_id: '',  // 不买 Down
+                    outcome: 'Down',
+                    price: '0',
+                },
+                timeGroup,
+                isCrossPool: false,  // 同池操作
+                upMarketSlug: ethMarket.market.slug,
+                downMarketSlug: ethMarket.market.slug,
+                downConditionId: ethMarket.conditionId,
+                upAskPrice: ethMarket.upBook.bestAsk,
+                downAskPrice: 0,
+                upAskSize: ethMarket.upBook.bestAskSize,
+                downAskSize: 0,
+                combinedCost: ethMarket.upBook.bestAsk,
+                profitPercent: 0,
+                maxShares: ethUpShares,
+                endDate: ethMarket.market.end_date_iso,
+                upIsCheap: true,
+                downIsCheap: false,
+                priority: 100,
+                groupAnalysis: {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: 0,
+                    needMoreUp: true,
+                    needMoreDown: false,
+                    predictedAvgCost: 0,
+                    predictedProfit: 0,
+                    worthBuying: true,
+                },
+                eventAnalysis: {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: 0,
+                    needMoreUp: true,
+                    needMoreDown: false,
+                    predictedAvgCost: 0,
+                    predictedProfit: 0,
+                    worthBuying: true,
+                },
+                tradingAction: 'buy_up_only',  // 只补 Up
+                isHedge: true,
+            });
+        }
+    }
+    
+    if (opportunities.length === 0) {
+        Logger.warning(`🛡️ [${timeGroup}] 对冲深度不足`);
+    }
+    
+    return opportunities;
+};
+
 export default {
     fetchCryptoMarkets,
     initWebSocket,
     scanArbitrageOpportunities,
+    generateHedgeOpportunities,
     printOpportunities,
     getWebSocketStatus,
     getCurrentPrices,

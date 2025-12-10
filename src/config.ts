@@ -108,6 +108,9 @@ export const CONFIG = {
         return val > 1 ? val / 100 : val;  // 如果 > 1，自动转换为小数
     })(),
     
+    // 止损模式：'sell' = 平仓止损，'hedge' = 对冲补仓保本
+    STOP_LOSS_MODE: (process.env.STOP_LOSS_MODE || 'sell') as 'sell' | 'hedge',
+    
     // 最小触发次数（风险次数的绝对值必须超过此值才触发止损）
     // 默认30次，避免样本太小误判
     STOP_LOSS_MIN_TRIGGER_COUNT: parseInt(process.env.STOP_LOSS_MIN_TRIGGER_COUNT || '30'),

@@ -89,6 +89,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '',
         '# ========== 止损配置 ==========',
         `STOP_LOSS_ENABLED=${config.STOP_LOSS_ENABLED || 'true'}`,
+        `STOP_LOSS_MODE=${config.STOP_LOSS_MODE || 'hedge'}`,
         `STOP_LOSS_WINDOW_SEC=${config.STOP_LOSS_WINDOW_SEC || '180'}`,
         `STOP_LOSS_COST_THRESHOLD=${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`,
         `STOP_LOSS_RISK_RATIO=${config.STOP_LOSS_RISK_RATIO || '60'}`,
@@ -324,6 +325,39 @@ const main = async () => {
     config.STOP_LOSS_ENABLED = stopLossEnabled.toLowerCase() === 'n' ? 'false' : 'true';
     
     if (config.STOP_LOSS_ENABLED !== 'false') {
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('止损模式选择');
+        log.info('');
+        log.info('  sell  - 平仓止损');
+        log.info('          检测到风险后卖出仓位，接受部分亏损');
+        log.info('          优点：立即离场，不需要额外资金');
+        log.info('          缺点：会有部分亏损');
+        log.info('');
+        log.info('  hedge - 同池对冲保本（推荐）');
+        log.info('          检测到风险后，在各自池子内补仓对冲');
+        log.info('');
+        log.info('          原有仓位：');
+        log.info('            BTC 池：BTC Up（跨池套利买入）');
+        log.info('            ETH 池：ETH Down（跨池套利买入）');
+        log.info('');
+        log.info('          对冲补仓：');
+        log.info('            BTC 池：补 BTC Down → 无论 BTC 涨跌都保本');
+        log.info('            ETH 池：补 ETH Up → 无论 ETH 涨跌都保本');
+        log.info('');
+        log.info('          结果分析：');
+        log.info('            正常套利 → 双赢大赚 / 单赢小赚');
+        log.info('            触发对冲 → 保本（不赚不亏）');
+        log.info('            效果：避免"双输"场景的 100% 亏损');
+        log.info('═══════════════════════════════════════════════════════');
+        const currentMode = config.STOP_LOSS_MODE || 'hedge';
+        const modeInput = await question(`止损模式 sell/hedge (当前: ${currentMode}): `);
+        if (modeInput === 'sell' || modeInput === 'hedge') {
+            config.STOP_LOSS_MODE = modeInput;
+        } else if (!config.STOP_LOSS_MODE) {
+            config.STOP_LOSS_MODE = 'hedge';
+        }
+        
         const currentWindow = config.STOP_LOSS_WINDOW_SEC || '180';
         log.info(`监控窗口：结束前多少秒开始统计风险`);
         const windowSec = await question(`监控窗口 秒 (当前: ${currentWindow}): `);
@@ -407,9 +441,16 @@ const main = async () => {
     console.log(`     组合成本下限: $${(1 - parseFloat(initial)/100).toFixed(2)} → $${(1 - parseFloat(final)/100).toFixed(2)}（${tighten}分钟内收紧）`);
     console.log(`     深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
     console.log('');
-    console.log(`  🚨 止损配置:`);
+    console.log(`  🚨 止损/对冲配置:`);
     console.log(`     止损功能: ${config.STOP_LOSS_ENABLED === 'false' ? '❌ 关闭' : '✅ 开启'}`);
     if (config.STOP_LOSS_ENABLED !== 'false') {
+        const mode = config.STOP_LOSS_MODE || 'hedge';
+        const modeLabel = mode === 'hedge' ? '🛡️ 同池对冲保本（推荐）' : '📉 平仓止损';
+        console.log(`     止损模式: ${modeLabel}`);
+        if (mode === 'hedge') {
+            console.log(`       └─ 检测风险后补仓: BTC池补Down + ETH池补Up`);
+            console.log(`       └─ 效果: 双赢赚钱 / 单赢小赚 / 风险保本`);
+        }
         console.log(`     监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
         console.log(`     风险阈值: 组合价格 < $${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`);
         const ratioVal = parseFloat(config.STOP_LOSS_RISK_RATIO || '60');
