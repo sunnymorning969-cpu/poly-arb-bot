@@ -302,10 +302,10 @@ const main = async () => {
             config.STOP_LOSS_COST_THRESHOLD = '0.6';
         }
         
-        const currentRiskRatio = config.STOP_LOSS_RISK_RATIO || '0.7';
+        const currentRiskRatio = config.STOP_LOSS_RISK_RATIO || '70';
         log.info(`风险比例：低于阈值的次数占总检查次数的比例，超过此值触发止损`);
-        log.info(`例如 0.7 = 70%`);
-        const riskRatio = await question(`风险比例 (当前: ${currentRiskRatio}): `);
+        log.info(`支持两种格式：70 或 0.7 都表示 70%`);
+        const riskRatio = await question(`风险比例 % (当前: ${currentRiskRatio}): `);
         if (riskRatio && !isNaN(parseFloat(riskRatio))) {
             config.STOP_LOSS_RISK_RATIO = riskRatio;
         } else if (!config.STOP_LOSS_RISK_RATIO) {

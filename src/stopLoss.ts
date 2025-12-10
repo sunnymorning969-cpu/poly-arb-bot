@@ -38,6 +38,7 @@ interface StopLossState {
 interface PriceTracker {
     timeGroup: TimeGroup;
     startTime: number;           // 开始追踪时间
+    eventEndDate: string;        // 当前追踪的事件结束时间（用于检测事件切换）
     priceHistory: Array<{        // 价格历史
         time: number;
         combinedBid: number;
@@ -51,6 +52,7 @@ interface PriceTracker {
     riskCheckCount: number;      // 风险窗口内的总检查次数
     riskTriggerCount: number;    // 低于阈值的次数
     riskWindowStartTime: number; // 风险窗口开始时间
+    lastLogTime: number;         // 上次输出日志的时间
 }
 
 // 事件统计摘要（事件结束时输出）
@@ -116,16 +118,26 @@ export const recordArbitrageOpportunity = (
     
     // 获取或创建 tracker
     let tracker = priceTrackers.get(timeGroup);
+    
+    // 检测事件切换：如果 endDate 变了，说明是新事件，需要重置
+    if (tracker && tracker.eventEndDate !== endDate) {
+        Logger.info(`🔄 [${timeGroup}] 检测到事件切换，重置统计`);
+        priceTrackers.delete(timeGroup);
+        tracker = undefined;
+    }
+    
     if (!tracker) {
         tracker = {
             timeGroup,
             startTime: now,
+            eventEndDate: endDate,
             priceHistory: [],
             totalCheckCount: 0,
             totalBelowThreshold: 0,
             riskCheckCount: 0,
             riskTriggerCount: 0,
             riskWindowStartTime: 0,
+            lastLogTime: 0,
         };
         priceTrackers.set(timeGroup, tracker);
     }
@@ -171,8 +183,9 @@ export const recordArbitrageOpportunity = (
     // 计算风险比例
     const riskRatio = tracker.riskTriggerCount / tracker.riskCheckCount;
     
-    // 每10次打印一次日志
-    if (tracker.riskCheckCount % 10 === 0) {
+    // 每10秒打印一次日志（避免日志刷屏）
+    if (now - tracker.lastLogTime >= 10000) {
+        tracker.lastLogTime = now;
         Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 当前=$${combinedCost.toFixed(2)} | 阈值: <$${CONFIG.STOP_LOSS_COST_THRESHOLD} ≥${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}% & ${CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT}次`);
     }
     

@@ -102,8 +102,11 @@ export const CONFIG = {
     STOP_LOSS_CHECK_INTERVAL_MS: parseInt(process.env.STOP_LOSS_CHECK_INTERVAL_MS || '1000'),
     
     // 风险比例阈值（低于阈值的次数占总检查次数的比例，超过此值触发止损）
-    // 默认0.7 = 70%
-    STOP_LOSS_RISK_RATIO: parseFloat(process.env.STOP_LOSS_RISK_RATIO || '0.7'),
+    // 支持两种输入格式：0.7 或 70 都表示 70%
+    STOP_LOSS_RISK_RATIO: (() => {
+        const val = parseFloat(process.env.STOP_LOSS_RISK_RATIO || '0.7');
+        return val > 1 ? val / 100 : val;  // 如果 > 1，自动转换为小数
+    })(),
     
     // 最小触发次数（风险次数的绝对值必须超过此值才触发止损）
     // 默认30次，避免样本太小误判
