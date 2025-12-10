@@ -19,12 +19,26 @@ interface HedgeState {
     totalHedgeCost: number;       // 对冲总成本
     hedgeCount: number;           // 对冲次数
     lastLogTime: number;          // 上次打印日志时间
+    // 目标补仓数量（启动时一次性计算）
+    targetBtcUp: number;          // 需要补的 BTC Up 总数
+    targetBtcDown: number;        // 需要补的 BTC Down 总数
+    targetEthUp: number;          // 需要补的 ETH Up 总数
+    targetEthDown: number;        // 需要补的 ETH Down 总数
+    // 已补数量
+    filledBtcUp: number;
+    filledBtcDown: number;
+    filledEthUp: number;
+    filledEthDown: number;
 }
 
 const hedgeStates = new Map<TimeGroup, HedgeState>();
 
 // 对冲日志控制
 const HEDGE_LOG_INTERVAL_MS = 5000;  // 每5秒最多打印一次对冲日志
+
+// 对冲执行冷却（防止重复下单）
+const lastHedgeExecution = new Map<TimeGroup, number>();
+const HEDGE_COOLDOWN_MS = 1000;  // 每秒最多执行一次对冲
 
 export const shouldPrintHedgeLog = (timeGroup: TimeGroup): boolean => {
     const state = hedgeStates.get(timeGroup);
@@ -33,6 +47,20 @@ export const shouldPrintHedgeLog = (timeGroup: TimeGroup): boolean => {
     const now = Date.now();
     if (now - state.lastLogTime >= HEDGE_LOG_INTERVAL_MS) {
         state.lastLogTime = now;
+        return true;
+    }
+    return false;
+};
+
+/**
+ * 检查是否可以执行对冲（冷却控制）
+ */
+export const canExecuteHedge = (timeGroup: TimeGroup): boolean => {
+    const lastTime = lastHedgeExecution.get(timeGroup) || 0;
+    const now = Date.now();
+    
+    if (now - lastTime >= HEDGE_COOLDOWN_MS) {
+        lastHedgeExecution.set(timeGroup, now);
         return true;
     }
     return false;
@@ -231,9 +259,17 @@ export const calculateHedgeNeeded = (
 };
 
 /**
- * 开始对冲模式
+ * 开始对冲模式（一次性计算目标补仓数量）
  */
-export const startHedging = (timeGroup: TimeGroup): void => {
+export const startHedging = (
+    timeGroup: TimeGroup,
+    targets: {
+        btcUp: number;
+        btcDown: number;
+        ethUp: number;
+        ethDown: number;
+    }
+): void => {
     const existing = hedgeStates.get(timeGroup);
     if (existing && existing.isHedging) {
         return; // 已经在对冲
@@ -245,13 +281,24 @@ export const startHedging = (timeGroup: TimeGroup): void => {
         startTime: Date.now(),
         totalHedgeCost: 0,
         hedgeCount: 0,
-        lastLogTime: Date.now(),  // 设置为当前时间，避免重复打印
+        lastLogTime: Date.now(),
+        // 目标补仓数量（一次性计算，不再改变）
+        targetBtcUp: targets.btcUp,
+        targetBtcDown: targets.btcDown,
+        targetEthUp: targets.ethUp,
+        targetEthDown: targets.ethDown,
+        // 已补数量
+        filledBtcUp: 0,
+        filledBtcDown: 0,
+        filledEthUp: 0,
+        filledEthDown: 0,
     });
     
     // 更新全局统计
     globalHedgeStats.totalHedgeEvents++;
     
     Logger.warning(`🛡️ [${timeGroup}] 启动对冲保本模式，停止套利 (累计第 ${globalHedgeStats.totalHedgeEvents} 次)`);
+    Logger.warning(`   目标: BTC Up +${targets.btcUp} Down +${targets.btcDown} | ETH Up +${targets.ethUp} Down +${targets.ethDown}`);
 };
 
 /**
@@ -303,7 +350,61 @@ export const isHedgeCompleted = (timeGroup: TimeGroup): boolean => {
 };
 
 /**
- * 记录对冲成本
+ * 记录对冲成本和已补数量
+ */
+export const recordHedgeFill = (
+    timeGroup: TimeGroup,
+    side: 'btcUp' | 'btcDown' | 'ethUp' | 'ethDown',
+    shares: number,
+    cost: number
+): void => {
+    const state = hedgeStates.get(timeGroup);
+    if (!state) return;
+    
+    state.totalHedgeCost += cost;
+    state.hedgeCount++;
+    
+    // 更新已补数量
+    switch (side) {
+        case 'btcUp': state.filledBtcUp += shares; break;
+        case 'btcDown': state.filledBtcDown += shares; break;
+        case 'ethUp': state.filledEthUp += shares; break;
+        case 'ethDown': state.filledEthDown += shares; break;
+    }
+    
+    // 检查是否全部补完
+    const btcUpDone = state.filledBtcUp >= state.targetBtcUp;
+    const btcDownDone = state.filledBtcDown >= state.targetBtcDown;
+    const ethUpDone = state.filledEthUp >= state.targetEthUp;
+    const ethDownDone = state.filledEthDown >= state.targetEthDown;
+    
+    if (btcUpDone && btcDownDone && ethUpDone && ethDownDone) {
+        completeHedging(timeGroup);
+    }
+};
+
+/**
+ * 获取剩余需要补的数量
+ */
+export const getRemainingHedge = (timeGroup: TimeGroup): {
+    btcUp: number;
+    btcDown: number;
+    ethUp: number;
+    ethDown: number;
+} | null => {
+    const state = hedgeStates.get(timeGroup);
+    if (!state || !state.isHedging || state.isCompleted) return null;
+    
+    return {
+        btcUp: Math.max(0, state.targetBtcUp - state.filledBtcUp),
+        btcDown: Math.max(0, state.targetBtcDown - state.filledBtcDown),
+        ethUp: Math.max(0, state.targetEthUp - state.filledEthUp),
+        ethDown: Math.max(0, state.targetEthDown - state.filledEthDown),
+    };
+};
+
+/**
+ * 记录对冲成本（旧接口，保持兼容）
  */
 export const recordHedgeCost = (timeGroup: TimeGroup, cost: number): void => {
     const state = hedgeStates.get(timeGroup);
@@ -381,8 +482,11 @@ export default {
     isHedging,
     isHedgeCompleted,
     recordHedgeCost,
+    recordHedgeFill,
+    getRemainingHedge,
     getHedgeSummary,
     printHedgeStatus,
     getGlobalHedgeStats,
+    canExecuteHedge,
 };
 

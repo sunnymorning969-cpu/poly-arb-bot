@@ -13,7 +13,7 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
 import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, recordArbitrageOpportunity } from './stopLoss';
-import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog } from './hedging';
+import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog, canExecuteHedge, getRemainingHedge } from './hedging';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -96,6 +96,7 @@ export interface ArbitrageOpportunity {
     tradingAction: 'buy_both' | 'buy_up_only' | 'buy_down_only' | 'wait';
     // 对冲标记
     isHedge?: boolean;  // 是否为对冲补仓交易
+    hedgeSide?: 'btcUp' | 'btcDown' | 'ethUp' | 'ethDown';  // 对冲方向
 }
 
 // API 响应接口
@@ -774,20 +775,22 @@ export const getDebugInfo = (): string => {
 /**
  * 生成同池对冲补仓机会
  * 
- * 同池对冲策略：
- * - BTC 池：持有 BTC Up → 补 BTC Down → BTC 池保本
- * - ETH 池：持有 ETH Down → 补 ETH Up → ETH 池保本
- * 
- * 每个池子独立对冲，确保无论该池结果如何都能保本
+ * 流程：
+ * 1. 第一次调用：计算目标补仓数量，存储到 HedgeState
+ * 2. 后续调用：读取剩余需要补的数量，生成机会
+ * 3. 补完后自动标记完成，停止生成机会
  */
 export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOpportunity[] => {
     const opportunities: ArbitrageOpportunity[] = [];
     
-    // 获取当前持仓汇总
-    const summary = getGroupPositionSummary(timeGroup);
+    // 对冲已完成，不再生成机会
+    if (isHedgeCompleted(timeGroup)) {
+        return opportunities;
+    }
     
-    if (summary.totalCost === 0) {
-        return opportunities; // 没有持仓，不需要对冲
+    // 冷却检查：每秒最多生成一次对冲机会
+    if (!canExecuteHedge(timeGroup)) {
+        return opportunities;
     }
     
     // 获取市场信息
@@ -828,56 +831,69 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     }
     
     if (!btcMarket || !ethMarket) {
-        Logger.warning(`🛡️ [${timeGroup}] 对冲失败: 找不到 BTC 或 ETH 市场`);
         return opportunities;
     }
     
-    // 计算需要补多少（根据实际仓位结构）
-    const hedgeInfo = calculateHedgeNeeded(
-        summary,
-        btcMarket.upBook.bestAsk,     // BTC Up 价格
-        btcMarket.downBook.bestAsk,   // BTC Down 价格
-        ethMarket.upBook.bestAsk,     // ETH Up 价格
-        ethMarket.downBook.bestAsk    // ETH Down 价格
-    );
-    
-    if (!hedgeInfo.needHedge) {
-        // 对冲完成
-        if (isHedging(timeGroup) && !isHedgeCompleted(timeGroup)) {
-            completeHedging(timeGroup);
-        }
-        return opportunities;
-    }
-    
-    // 启动对冲模式
+    // 检查是否已经在对冲中
     if (!isHedging(timeGroup)) {
-        startHedging(timeGroup);
+        // 第一次：计算目标补仓数量并启动对冲
+        const summary = getGroupPositionSummary(timeGroup);
+        
+        if (summary.totalCost === 0) {
+            return opportunities; // 没有持仓
+        }
+        
+        const hedgeInfo = calculateHedgeNeeded(
+            summary,
+            btcMarket.upBook.bestAsk,
+            btcMarket.downBook.bestAsk,
+            ethMarket.upBook.bestAsk,
+            ethMarket.downBook.bestAsk
+        );
+        
+        if (!hedgeInfo.needHedge) {
+            return opportunities; // 不需要对冲
+        }
+        
+        // 启动对冲，存储目标数量（一次性计算）
+        startHedging(timeGroup, {
+            btcUp: hedgeInfo.btcUpNeeded,
+            btcDown: hedgeInfo.btcDownNeeded,
+            ethUp: hedgeInfo.ethUpNeeded,
+            ethDown: hedgeInfo.ethDownNeeded,
+        });
+        
+        Logger.warning(`   当前仓位: BTC Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)} | ETH Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)}`);
     }
     
-    // 打印对冲需求（每5秒最多一次）
+    // 获取剩余需要补的数量
+    const remaining = getRemainingHedge(timeGroup);
+    if (!remaining) {
+        return opportunities; // 对冲已完成或未启动
+    }
+    
+    // 检查是否全部补完
+    if (remaining.btcUp === 0 && remaining.btcDown === 0 && 
+        remaining.ethUp === 0 && remaining.ethDown === 0) {
+        completeHedging(timeGroup);
+        return opportunities;
+    }
+    
+    // 打印进度（每5秒一次）
     if (shouldPrintHedgeLog(timeGroup)) {
-        Logger.warning(`🛡️ [${timeGroup}] 同池对冲:`);
-        Logger.warning(`   BTC池: Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)}`);
-        if (hedgeInfo.btcUpNeeded > 0) {
-            Logger.warning(`   → 需补 ${hedgeInfo.btcUpNeeded} BTC Up`);
-        }
-        if (hedgeInfo.btcDownNeeded > 0) {
-            Logger.warning(`   → 需补 ${hedgeInfo.btcDownNeeded} BTC Down`);
-        }
-        Logger.warning(`   ETH池: Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)}`);
-        if (hedgeInfo.ethUpNeeded > 0) {
-            Logger.warning(`   → 需补 ${hedgeInfo.ethUpNeeded} ETH Up`);
-        }
-        if (hedgeInfo.ethDownNeeded > 0) {
-            Logger.warning(`   → 需补 ${hedgeInfo.ethDownNeeded} ETH Down`);
-        }
+        Logger.warning(`🛡️ [${timeGroup}] 对冲进度:`);
+        if (remaining.btcUp > 0) Logger.warning(`   → 剩余 ${remaining.btcUp} BTC Up`);
+        if (remaining.btcDown > 0) Logger.warning(`   → 剩余 ${remaining.btcDown} BTC Down`);
+        if (remaining.ethUp > 0) Logger.warning(`   → 剩余 ${remaining.ethUp} ETH Up`);
+        if (remaining.ethDown > 0) Logger.warning(`   → 剩余 ${remaining.ethDown} ETH Down`);
     }
     
     // 辅助函数：创建对冲机会
     const createHedgeOpp = (
         market: typeof btcMarket,
         side: 'up' | 'down',
-        sharesNeeded: number
+        sharesNeeded: number,
+        hedgeSide: 'btcUp' | 'btcDown' | 'ethUp' | 'ethDown'
     ): ArbitrageOpportunity | null => {
         const book = side === 'up' ? market.upBook : market.downBook;
         const token = side === 'up' ? market.upToken : market.downToken;
@@ -920,26 +936,22 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
             eventAnalysis: { hasPosition: true, currentAvgCost: 0, currentProfit: 0, imbalance: 0, needMoreUp: side === 'up', needMoreDown: side === 'down', predictedAvgCost: 0, predictedProfit: 0, worthBuying: true },
             tradingAction: side === 'up' ? 'buy_up_only' : 'buy_down_only',
             isHedge: true,
+            hedgeSide,
         };
     };
     
-    // 生成 BTC 池对冲机会
-    if (hedgeInfo.btcUpNeeded > 0) {
-        const opp = createHedgeOpp(btcMarket, 'up', hedgeInfo.btcUpNeeded);
+    // 生成对冲机会（每次只生成一个方向，避免并行问题）
+    if (remaining.btcUp > 0) {
+        const opp = createHedgeOpp(btcMarket, 'up', remaining.btcUp, 'btcUp');
         if (opp) opportunities.push(opp);
-    }
-    if (hedgeInfo.btcDownNeeded > 0) {
-        const opp = createHedgeOpp(btcMarket, 'down', hedgeInfo.btcDownNeeded);
+    } else if (remaining.btcDown > 0) {
+        const opp = createHedgeOpp(btcMarket, 'down', remaining.btcDown, 'btcDown');
         if (opp) opportunities.push(opp);
-    }
-    
-    // 生成 ETH 池对冲机会
-    if (hedgeInfo.ethUpNeeded > 0) {
-        const opp = createHedgeOpp(ethMarket, 'up', hedgeInfo.ethUpNeeded);
+    } else if (remaining.ethUp > 0) {
+        const opp = createHedgeOpp(ethMarket, 'up', remaining.ethUp, 'ethUp');
         if (opp) opportunities.push(opp);
-    }
-    if (hedgeInfo.ethDownNeeded > 0) {
-        const opp = createHedgeOpp(ethMarket, 'down', hedgeInfo.ethDownNeeded);
+    } else if (remaining.ethDown > 0) {
+        const opp = createHedgeOpp(ethMarket, 'down', remaining.ethDown, 'ethDown');
         if (opp) opportunities.push(opp);
     }
     

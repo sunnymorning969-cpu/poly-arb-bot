@@ -14,7 +14,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { ArbitrageOpportunity } from './scanner';
 import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis } from './positions';
-import { recordHedgeCost } from './hedging';
+import { recordHedgeCost, recordHedgeFill } from './hedging';
 
 let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
@@ -619,8 +619,12 @@ export const executeArbitrage = async (
     const timeTag = opportunity.timeGroup || '';
     
     if (success) {
-        // 如果是对冲交易，记录对冲成本
-        if (opportunity.isHedge && opportunity.timeGroup) {
+        // 如果是对冲交易，记录对冲成本和已补数量
+        if (opportunity.isHedge && opportunity.timeGroup && opportunity.hedgeSide) {
+            const filledShares = upResult.filled > 0 ? upResult.filled : downResult.filled;
+            recordHedgeFill(opportunity.timeGroup, opportunity.hedgeSide, filledShares, totalCost);
+        } else if (opportunity.isHedge && opportunity.timeGroup) {
+            // 兼容旧接口
             recordHedgeCost(opportunity.timeGroup, totalCost);
         }
         
