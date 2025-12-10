@@ -362,8 +362,9 @@ const main = async () => {
     if (config.STOP_LOSS_ENABLED !== 'false') {
         console.log(`  监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
         console.log(`  组合阈值: $${config.STOP_LOSS_COST_THRESHOLD || '0.6'}`);
-        const ratio = parseFloat(config.STOP_LOSS_RISK_RATIO || '0.7') * 100;
-        console.log(`  风险比例: ≥${ratio.toFixed(0)}%`);
+        const ratioVal = parseFloat(config.STOP_LOSS_RISK_RATIO || '0.7');
+        const ratioPercent = ratioVal > 1 ? ratioVal : ratioVal * 100;  // 兼容 70 或 0.7 格式
+        console.log(`  风险比例: ≥${ratioPercent.toFixed(0)}%`);
         console.log(`  最小次数: ≥${config.STOP_LOSS_MIN_TRIGGER_COUNT || '30'} 次`);
     }
     console.log('');
