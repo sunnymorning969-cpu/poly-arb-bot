@@ -13,7 +13,7 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
 import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, recordArbitrageOpportunity } from './stopLoss';
-import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, printHedgeStatus, stopHedging } from './hedging';
+import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, printHedgeStatus, stopHedging, shouldPrintHedgeLog } from './hedging';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -853,19 +853,21 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
         startHedging(timeGroup);
     }
     
-    // 打印对冲需求（含持仓和价格信息）
-    Logger.warning(`🛡️ [${timeGroup}] 同池对冲:`);
-    if (hedgeInfo.btcDownNeeded > 0) {
-        const btcDownPrice = btcMarket.downBook.bestAsk;
-        const hedgeCost = hedgeInfo.btcDownNeeded * btcDownPrice;
-        Logger.warning(`   BTC池: Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)} 成本=$${(summary.btcUpCost + summary.btcDownCost).toFixed(2)}`);
-        Logger.warning(`   → 需补 ${hedgeInfo.btcDownNeeded} BTC Down @ $${btcDownPrice.toFixed(3)} = $${hedgeCost.toFixed(2)}`);
-    }
-    if (hedgeInfo.ethUpNeeded > 0 && ethMarket) {
-        const ethUpPrice = ethMarket.upBook.bestAsk;
-        const hedgeCost = hedgeInfo.ethUpNeeded * ethUpPrice;
-        Logger.warning(`   ETH池: Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)} 成本=$${(summary.ethUpCost + summary.ethDownCost).toFixed(2)}`);
-        Logger.warning(`   → 需补 ${hedgeInfo.ethUpNeeded} ETH Up @ $${ethUpPrice.toFixed(3)} = $${hedgeCost.toFixed(2)}`);
+    // 打印对冲需求（每5秒最多一次，避免刷屏）
+    if (shouldPrintHedgeLog(timeGroup)) {
+        Logger.warning(`🛡️ [${timeGroup}] 同池对冲:`);
+        if (hedgeInfo.btcDownNeeded > 0) {
+            const btcDownPrice = btcMarket.downBook.bestAsk;
+            const hedgeCost = hedgeInfo.btcDownNeeded * btcDownPrice;
+            Logger.warning(`   BTC池: Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)} 成本=$${(summary.btcUpCost + summary.btcDownCost).toFixed(2)}`);
+            Logger.warning(`   → 需补 ${hedgeInfo.btcDownNeeded} BTC Down @ $${btcDownPrice.toFixed(3)} = $${hedgeCost.toFixed(2)}`);
+        }
+        if (hedgeInfo.ethUpNeeded > 0 && ethMarket) {
+            const ethUpPrice = ethMarket.upBook.bestAsk;
+            const hedgeCost = hedgeInfo.ethUpNeeded * ethUpPrice;
+            Logger.warning(`   ETH池: Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)} 成本=$${(summary.ethUpCost + summary.ethDownCost).toFixed(2)}`);
+            Logger.warning(`   → 需补 ${hedgeInfo.ethUpNeeded} ETH Up @ $${ethUpPrice.toFixed(3)} = $${hedgeCost.toFixed(2)}`);
+        }
     }
     
     // ========== 生成 BTC 池对冲机会（补 BTC Down）==========

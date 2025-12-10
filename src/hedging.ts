@@ -18,9 +18,25 @@ interface HedgeState {
     startTime: number;            // 开始对冲时间
     totalHedgeCost: number;       // 对冲总成本
     hedgeCount: number;           // 对冲次数
+    lastLogTime: number;          // 上次打印日志时间
 }
 
 const hedgeStates = new Map<TimeGroup, HedgeState>();
+
+// 对冲日志控制
+const HEDGE_LOG_INTERVAL_MS = 5000;  // 每5秒最多打印一次对冲日志
+
+export const shouldPrintHedgeLog = (timeGroup: TimeGroup): boolean => {
+    const state = hedgeStates.get(timeGroup);
+    if (!state) return true;
+    
+    const now = Date.now();
+    if (now - state.lastLogTime >= HEDGE_LOG_INTERVAL_MS) {
+        state.lastLogTime = now;
+        return true;
+    }
+    return false;
+};
 
 // 全局对冲统计（累计所有事件）
 interface HedgeStats {
@@ -217,6 +233,7 @@ export const startHedging = (timeGroup: TimeGroup): void => {
         startTime: Date.now(),
         totalHedgeCost: 0,
         hedgeCount: 0,
+        lastLogTime: 0,  // 第一次立即打印
     });
     
     // 更新全局统计

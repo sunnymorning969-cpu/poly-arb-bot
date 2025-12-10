@@ -165,14 +165,9 @@ const selectOpportunities = (
         // ============ 止损/对冲检查（最高优先级）============
         const pauseCheck = shouldPauseTrading(opp.timeGroup);
         
-        // 如果是对冲交易，跳过止损检查
+        // 如果是对冲交易，跳过止损检查，静默执行
         if (opp.isHedge) {
-            // 对冲交易优先执行
             selected.push(opp);
-            // 根据实际买入显示
-            const buyingWhat = opp.tradingAction === 'buy_down_only' ? 'BTC Down' : 
-                              opp.tradingAction === 'buy_up_only' ? 'ETH Up' : '对冲';
-            Logger.warning(`🛡️ ${opp.timeGroup} 对冲补仓: ${buyingWhat} @ $${opp.combinedCost.toFixed(3)}`);
             continue;
         }
         
@@ -343,22 +338,34 @@ const mainLoop = async () => {
             stats.scans++;
             scansSinceLog++;
             
-            // 静默扫描（不输出每次扫描日志）
-            let opportunities = await scanArbitrageOpportunities(true);
+            // 检查对冲/止损状态（优先于套利）
+            let opportunities: ArbitrageOpportunity[] = [];
+            let shouldSkipArbitrage = false;
             
-            // 检查是否需要对冲补仓（支持多个时间组）
             if (CONFIG.STOP_LOSS_MODE === 'hedge') {
                 for (const timeGroup of ['15min', '1hr'] as const) {
                     const pauseCheck = shouldPauseTrading(timeGroup);
+                    
+                    // 对冲已完成，等待事件结束，停止所有交易
+                    if (pauseCheck.pause) {
+                        shouldSkipArbitrage = true;
+                        continue;
+                    }
+                    
+                    // 需要对冲，停止套利，只执行对冲
                     if (pauseCheck.shouldHedge) {
-                        // 生成对冲机会
+                        shouldSkipArbitrage = true;
                         const hedgeOpps = generateHedgeOpportunities(timeGroup);
                         if (hedgeOpps.length > 0) {
-                            opportunities = hedgeOpps;  // 对冲优先
-                            break;
+                            opportunities = hedgeOpps;
                         }
                     }
                 }
+            }
+            
+            // 只有在没有对冲需求时才进行常规套利
+            if (!shouldSkipArbitrage && opportunities.length === 0) {
+                opportunities = await scanArbitrageOpportunities(true);
             }
             
             if (opportunities.length > 0) {
