@@ -21,7 +21,7 @@
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
-import { getAllPositions, Position, getTimeGroup, TimeGroup } from './positions';
+import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
 import { notifyStopLoss } from './telegram';
 
 // 止损状态追踪
@@ -388,6 +388,9 @@ export const executeStopLoss = async (
             isSimulation: true,
         });
         
+        // 记录止损盈亏并清除仓位
+        settleStopLoss(signal.timeGroup, totalReceived, totalCost);
+        
         return {
             success: true,
             upSold: totalUpShares,
@@ -445,6 +448,9 @@ export const executeStopLoss = async (
         savedLoss,
         isSimulation: false,
     });
+    
+    // 记录止损盈亏并清除仓位
+    settleStopLoss(signal.timeGroup, totalReceived, totalCost);
     
     return {
         success: true,

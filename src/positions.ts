@@ -544,6 +544,76 @@ export const settlePosition = (pos: Position, outcome: 'up' | 'down'): Settlemen
 };
 
 /**
+ * 止损结算 - 记录止损操作的盈亏
+ * 
+ * @param timeGroup 时间组（15min/1hr）
+ * @param totalReceived 止损卖出收回的金额
+ * @param totalCost 原始成本
+ */
+export const settleStopLoss = (
+    timeGroup: TimeGroup,
+    totalReceived: number,
+    totalCost: number
+): SettlementResult[] => {
+    const results: SettlementResult[] = [];
+    
+    // 找到该时间组的所有仓位
+    const positionsToSettle: Position[] = [];
+    for (const [conditionId, pos] of positions) {
+        if (getTimeGroup(pos.slug) === timeGroup) {
+            positionsToSettle.push(pos);
+        }
+    }
+    
+    if (positionsToSettle.length === 0) {
+        return results;
+    }
+    
+    // 计算每个仓位的止损结果（按比例分配收回金额）
+    const totalOriginalCost = positionsToSettle.reduce((sum, p) => sum + p.upCost + p.downCost, 0);
+    
+    for (const pos of positionsToSettle) {
+        const posCost = pos.upCost + pos.downCost;
+        const costRatio = totalOriginalCost > 0 ? posCost / totalOriginalCost : 0;
+        const posReceived = totalReceived * costRatio;
+        const profit = posReceived - posCost;
+        const profitPercent = posCost > 0 ? (profit / posCost) * 100 : 0;
+        
+        const result: SettlementResult = {
+            position: { ...pos },
+            outcome: 'down',  // 止损视为 down 结果（因为是提前卖出）
+            payout: posReceived,
+            totalCost: posCost,
+            profit,
+            profitPercent,
+        };
+        
+        // 保存到持久化存储（标记为止损）
+        addSettlementRecord({
+            conditionId: pos.conditionId,
+            slug: pos.slug + ' [止损]',
+            title: pos.title + ' [止损]',
+            outcome: 'stop_loss' as any,
+            payout: posReceived,
+            totalCost: posCost,
+            profit,
+            profitPercent,
+            settledAt: Date.now(),
+        });
+        
+        // 从内存和存储中删除仓位
+        positions.delete(pos.conditionId);
+        deleteFromStorage(pos.conditionId);
+        
+        results.push(result);
+        
+        Logger.info(`🚨 [止损结算] ${pos.slug}: 成本 $${posCost.toFixed(2)} → 收回 $${posReceived.toFixed(2)} = 盈亏 $${profit.toFixed(2)}`);
+    }
+    
+    return results;
+};
+
+/**
  * 检查并结算已到期的仓位
  * 
  * 无论模拟模式还是实盘模式，都从 API 获取真实结算结果

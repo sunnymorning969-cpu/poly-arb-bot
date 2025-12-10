@@ -274,8 +274,9 @@ const main = async () => {
     
     // ===== 止损配置 =====
     log.title('🚨 止损配置');
-    log.info('止损功能：在结束前检测到市场预期反向时自动平仓');
-    log.info('当组合价格突然变低（如<0.55），说明市场认为会双输');
+    log.info('止损功能：在事件结束前检测"最坏情况"（BTC跌+ETH涨），提前卖出减少损失');
+    log.info('触发条件：最后N秒内，组合Bid价格<阈值的比例超过70%且次数>30');
+    log.info('止损后：仓位会被清除，盈亏会计入统计，等待下一个事件');
     
     const stopLossEnabled = await question('启用止损功能？(y/n，默认 y): ');
     config.STOP_LOSS_ENABLED = stopLossEnabled.toLowerCase() === 'n' ? 'false' : 'true';
