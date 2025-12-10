@@ -521,8 +521,15 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const crossPoolProfit = (1 - crossPoolCost) * 100;
         const isCrossPool = cheapestUp.conditionId !== cheapestDown.conditionId;
         
-        // 记录套利机会到止损模块（用于风险统计）
-        recordArbitrageOpportunity(timeGroup, crossPoolCost, cheapestUp.market.end_date_iso);
+        // ============ 核心套利条件 ============
+        // 只有 Up + Down < $1.00 才是真正的套利机会
+        const isRealArbitrage = crossPoolCost < 0.995;
+        
+        // 只在有套利空间时才记录到止损模块（用于风险统计）
+        // 如果组合成本 >= $1，说明没有套利机会，不计入统计
+        if (isRealArbitrage) {
+            recordArbitrageOpportunity(timeGroup, crossPoolCost, cheapestUp.market.end_date_iso);
+        }
         
         // 预测组合买入后的成本
         const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
@@ -546,11 +553,6 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const downPrice = cheapestDown.downBook.bestAsk;
         const upSize = cheapestUp.upBook.bestAskSize;
         const downSize = cheapestDown.downBook.bestAskSize;
-        
-        // ============ 核心套利条件 ============
-        // 只有 Up + Down < $1.00 才是真正的套利机会
-        // 使用 0.995 而不是 0.9999，留出手续费空间
-        const isRealArbitrage = crossPoolCost < 0.995;
         
         // 策略 1: 真正的套利机会（Up + Down < $1.00）
         if (isRealArbitrage && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT) {

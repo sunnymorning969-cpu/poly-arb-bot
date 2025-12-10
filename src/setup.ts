@@ -2,7 +2,7 @@
  * 交互式配置脚本
  * 
  * 运行: npm run setup
- * 自动创建 .env 文件，只需填写私钥和钱包地址
+ * 自动创建 .env 文件
  */
 
 import * as fs from 'fs';
@@ -63,7 +63,7 @@ const loadExistingConfig = (): Record<string, string> => {
 // 保存配置
 const saveConfig = (config: Record<string, string>): void => {
     const lines: string[] = [
-        '# Polymarket 套利机器人配置',
+        '# Polymarket 跨池套利机器人配置',
         `# 生成时间: ${new Date().toLocaleString('zh-CN')}`,
         '',
         '# ========== 必填配置 ==========',
@@ -81,7 +81,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
-        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '0.1'}`,
+        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '2'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
         `MAX_ARBITRAGE_PERCENT_FINAL=${config.MAX_ARBITRAGE_PERCENT_FINAL || '15'}`,
         `MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=${config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13'}`,
@@ -90,10 +90,9 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 止损配置 ==========',
         `STOP_LOSS_ENABLED=${config.STOP_LOSS_ENABLED || 'true'}`,
         `STOP_LOSS_WINDOW_SEC=${config.STOP_LOSS_WINDOW_SEC || '180'}`,
-        `STOP_LOSS_COST_THRESHOLD=${config.STOP_LOSS_COST_THRESHOLD || '0.6'}`,
-        `STOP_LOSS_CHECK_INTERVAL_MS=${config.STOP_LOSS_CHECK_INTERVAL_MS || '1000'}`,
-        `STOP_LOSS_RISK_RATIO=${config.STOP_LOSS_RISK_RATIO || '0.7'}`,
-        `STOP_LOSS_MIN_TRIGGER_COUNT=${config.STOP_LOSS_MIN_TRIGGER_COUNT || '30'}`,
+        `STOP_LOSS_COST_THRESHOLD=${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`,
+        `STOP_LOSS_RISK_RATIO=${config.STOP_LOSS_RISK_RATIO || '60'}`,
+        `STOP_LOSS_MIN_TRIGGER_COUNT=${config.STOP_LOSS_MIN_TRIGGER_COUNT || '100'}`,
         '',
     ];
     
@@ -104,7 +103,7 @@ const saveConfig = (config: Record<string, string>): void => {
 const main = async () => {
     console.log('');
     console.log('╔═══════════════════════════════════════════════════════════╗');
-    console.log('║      🤖 Polymarket 套利机器人 - 配置向导                  ║');
+    console.log('║      🤖 Polymarket 跨池套利机器人 - 配置向导              ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
     console.log('');
     
@@ -220,7 +219,7 @@ const main = async () => {
     log.title('💰 交易参数');
     
     const currentMaxOrder = config.MAX_ORDER_SIZE_USD || '14';
-    const maxOrder = await question(`最大单笔下单金额 USD (当前: ${currentMaxOrder}): `);
+    const maxOrder = await question(`单笔最大下单金额 USD (当前: ${currentMaxOrder}): `);
     if (maxOrder && !isNaN(parseFloat(maxOrder))) {
         config.MAX_ORDER_SIZE_USD = maxOrder;
     } else if (!config.MAX_ORDER_SIZE_USD) {
@@ -228,29 +227,49 @@ const main = async () => {
     }
     
     const currentMinProfit = config.MIN_PROFIT_USD || '0.01';
-    const minProfit = await question(`最小套利利润 USD (当前: ${currentMinProfit}): `);
+    const minProfit = await question(`最小利润额 USD (当前: ${currentMinProfit}): `);
     if (minProfit && !isNaN(parseFloat(minProfit))) {
         config.MIN_PROFIT_USD = minProfit;
     } else if (!config.MIN_PROFIT_USD) {
         config.MIN_PROFIT_USD = '0.01';
     }
     
-    log.info('最小利润率：控制套利空间的下限，过滤掉利润率太低的交易');
-    log.info('例如：5% 意味着只做组合成本 < $0.95 的交易（利润率 ≥ 5%）');
-    log.info('利润率 = (1 - 组合成本) / 组合成本');
-    const currentMinArbPercent = config.MIN_ARBITRAGE_PERCENT || '0.1';
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('最小利润率 - 过滤利润率太低的交易');
+    log.info('');
+    log.info('  利润率 = (1 - 组合成本) / 组合成本 × 100%');
+    log.info('');
+    log.info('  示例：');
+    log.info('    组合成本 $0.98 → 利润率 2%');
+    log.info('    组合成本 $0.95 → 利润率 5%');
+    log.info('    组合成本 $0.90 → 利润率 11%');
+    log.info('');
+    log.info('  设置 5% 意味着只做组合成本 < $0.95 的交易');
+    log.info('  太低（如 0.1%）会接受高成本低利润的交易，亏损时损失大');
+    log.info('═══════════════════════════════════════════════════════');
+    const currentMinArbPercent = config.MIN_ARBITRAGE_PERCENT || '2';
     const minArbPercent = await question(`最小利润率 % (当前: ${currentMinArbPercent}): `);
     if (minArbPercent && !isNaN(parseFloat(minArbPercent))) {
         config.MIN_ARBITRAGE_PERCENT = minArbPercent;
     } else if (!config.MIN_ARBITRAGE_PERCENT) {
-        config.MIN_ARBITRAGE_PERCENT = '0.1';
+        config.MIN_ARBITRAGE_PERCENT = '2';
     }
     
-    log.info('最大套利敞口（动态）：开盘波动大允许大敞口，后期逐渐收紧');
-    log.info('公式：敞口从初始值线性收紧到最终值');
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('组合成本下限（动态）- 防止在市场分歧大时开仓');
+    log.info('');
+    log.info('  组合成本下限 = 1 - 敞口%');
+    log.info('');
+    log.info('  示例：');
+    log.info('    敞口 30% → 组合成本 > $0.70 可交易');
+    log.info('    敞口 15% → 组合成本 > $0.85 可交易');
+    log.info('');
+    log.info('  策略：开盘波动大，允许较大敞口；后期逐渐收紧');
+    log.info('═══════════════════════════════════════════════════════');
     
     const currentInitial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';
-    log.info(`初始敞口：开盘时允许的最大敞口（例如 30% = 组合成本>$0.70可交易）`);
     const initialArb = await question(`初始敞口 % (当前: ${currentInitial}): `);
     if (initialArb && !isNaN(parseFloat(initialArb))) {
         config.MAX_ARBITRAGE_PERCENT_INITIAL = initialArb;
@@ -259,7 +278,6 @@ const main = async () => {
     }
     
     const currentFinal = config.MAX_ARBITRAGE_PERCENT_FINAL || '15';
-    log.info(`最终敞口：后期收紧后的敞口限制（例如 15% = 组合成本>$0.85才可交易）`);
     const finalArb = await question(`最终敞口 % (当前: ${currentFinal}): `);
     if (finalArb && !isNaN(parseFloat(finalArb))) {
         config.MAX_ARBITRAGE_PERCENT_FINAL = finalArb;
@@ -268,7 +286,6 @@ const main = async () => {
     }
     
     const currentTighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
-    log.info(`收紧时长：在多少分钟内完成从初始到最终的收紧`);
     const tightenInput = await question(`收紧时长(分钟) (当前: ${currentTighten}): `);
     if (tightenInput && !isNaN(parseInt(tightenInput))) {
         config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = tightenInput;
@@ -286,17 +303,29 @@ const main = async () => {
     
     // ===== 止损配置 =====
     log.title('🚨 止损配置');
-    log.info('止损功能：在事件结束前检测"最坏情况"（BTC跌+ETH涨 或 BTC涨+ETH跌），提前卖出减少损失');
-    log.info('原理：每次扫描到套利机会时记录组合价格，统计低于风险阈值的占比');
-    log.info('触发条件：最后N秒内，组合价格<风险阈值的次数 / 总扫描次数 ≥ 风险比例 且 次数 ≥ 最小次数');
-    log.info('止损后：仓位会被清除，盈亏会计入统计，暂停开仓等待下一个事件');
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('止损功能 - 在事件结束前检测风险并提前平仓');
+    log.info('');
+    log.info('原理：');
+    log.info('  BTC 涨 + ETH 跌 或 BTC 跌 + ETH 涨 = "双输"场景');
+    log.info('  此时组合价格会很低（如 $0.3-$0.5）');
+    log.info('  通过统计低价组合的出现频率来判断风险');
+    log.info('');
+    log.info('触发条件：');
+    log.info('  最后 N 秒内，组合价格 < 阈值 的次数 / 总扫描次数 ≥ 风险比例');
+    log.info('  且 触发次数 ≥ 最小次数');
+    log.info('');
+    log.info('触发后：');
+    log.info('  立即卖出所有持仓，暂停开仓，等待下一个事件');
+    log.info('═══════════════════════════════════════════════════════');
     
     const stopLossEnabled = await question('启用止损功能？(y/n，默认 y): ');
     config.STOP_LOSS_ENABLED = stopLossEnabled.toLowerCase() === 'n' ? 'false' : 'true';
     
     if (config.STOP_LOSS_ENABLED !== 'false') {
         const currentWindow = config.STOP_LOSS_WINDOW_SEC || '180';
-        log.info(`监控窗口：结束前多少秒开始统计风险（默认180秒=倒数第3分钟）`);
+        log.info(`监控窗口：结束前多少秒开始统计风险`);
         const windowSec = await question(`监控窗口 秒 (当前: ${currentWindow}): `);
         if (windowSec && !isNaN(parseInt(windowSec))) {
             config.STOP_LOSS_WINDOW_SEC = windowSec;
@@ -304,34 +333,47 @@ const main = async () => {
             config.STOP_LOSS_WINDOW_SEC = '180';
         }
         
-        const currentCostThreshold = config.STOP_LOSS_COST_THRESHOLD || '0.6';
-        log.info(`风险阈值：组合价格(Up Ask + Down Ask)低于此值计入风险统计`);
-        log.info(`例如 0.48 = 组合价格<$0.48时算作风险信号`);
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('风险阈值 - 组合价格低于此值算作"风险信号"');
+        log.info('');
+        log.info('  正常情况：组合价格 $0.85-$1.00（BTC/ETH 同向）');
+        log.info('  风险情况：组合价格 $0.30-$0.50（BTC/ETH 反向）');
+        log.info('');
+        log.info('  建议设置 $0.4-$0.6 之间');
+        log.info('═══════════════════════════════════════════════════════');
+        const currentCostThreshold = config.STOP_LOSS_COST_THRESHOLD || '0.5';
         const costThreshold = await question(`风险阈值 $ (当前: ${currentCostThreshold}): `);
         if (costThreshold && !isNaN(parseFloat(costThreshold))) {
             config.STOP_LOSS_COST_THRESHOLD = costThreshold;
         } else if (!config.STOP_LOSS_COST_THRESHOLD) {
-            config.STOP_LOSS_COST_THRESHOLD = '0.6';
+            config.STOP_LOSS_COST_THRESHOLD = '0.5';
         }
         
-        const currentRiskRatio = config.STOP_LOSS_RISK_RATIO || '70';
-        log.info(`风险比例：低于阈值的次数占总检查次数的比例，超过此值触发止损`);
-        log.info(`支持两种格式：70 或 0.7 都表示 70%`);
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('风险比例 - 触发止损的阈值');
+        log.info('');
+        log.info('  例如 60% 意味着：');
+        log.info('  如果监控窗口内 60% 的扫描组合价格 < 风险阈值，触发止损');
+        log.info('');
+        log.info('  可输入 60 或 0.6，都表示 60%');
+        log.info('═══════════════════════════════════════════════════════');
+        const currentRiskRatio = config.STOP_LOSS_RISK_RATIO || '60';
         const riskRatio = await question(`风险比例 % (当前: ${currentRiskRatio}): `);
         if (riskRatio && !isNaN(parseFloat(riskRatio))) {
             config.STOP_LOSS_RISK_RATIO = riskRatio;
         } else if (!config.STOP_LOSS_RISK_RATIO) {
-            config.STOP_LOSS_RISK_RATIO = '0.7';
+            config.STOP_LOSS_RISK_RATIO = '60';
         }
         
-        const currentMinCount = config.STOP_LOSS_MIN_TRIGGER_COUNT || '30';
-        log.info(`最小触发次数：风险次数的绝对值必须超过此值才触发止损`);
-        log.info(`避免样本太小误判`);
+        const currentMinCount = config.STOP_LOSS_MIN_TRIGGER_COUNT || '100';
+        log.info(`最小触发次数：避免样本太小误判`);
         const minCount = await question(`最小触发次数 (当前: ${currentMinCount}): `);
         if (minCount && !isNaN(parseInt(minCount))) {
             config.STOP_LOSS_MIN_TRIGGER_COUNT = minCount;
         } else if (!config.STOP_LOSS_MIN_TRIGGER_COUNT) {
-            config.STOP_LOSS_MIN_TRIGGER_COUNT = '30';
+            config.STOP_LOSS_MIN_TRIGGER_COUNT = '100';
         }
     }
     
@@ -343,31 +385,55 @@ const main = async () => {
     console.log('║                    ✅ 配置完成                            ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
     console.log('');
-    console.log(`  模式: ${config.SIMULATION_MODE === 'true' ? '🔵 模拟（无需私钥）' : '🔴 真实交易'}`);
-    console.log(`  钱包: ${config.PROXY_WALLET ? config.PROXY_WALLET.slice(0, 10) + '...' : '未设置'}`);
-    console.log(`  启动清数据: ${config.CLEAR_DATA_ON_START === 'true' ? '✅ 是' : '❌ 否'}`);
-    console.log(`  15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
-    console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
-    console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);
-    console.log(`  最小利润额: $${config.MIN_PROFIT_USD}`);
-    console.log(`  最小利润率: ${config.MIN_ARBITRAGE_PERCENT || '0.1'}%`);
+    
+    // 打印配置摘要
+    console.log(`${colors.bright}📋 配置摘要${colors.reset}`);
+    console.log('');
+    console.log(`  🔵 模式: ${config.SIMULATION_MODE === 'true' ? '模拟（无需私钥）' : '🔴 实盘'}`);
+    console.log(`  💼 钱包: ${config.PROXY_WALLET ? config.PROXY_WALLET.slice(0, 10) + '...' : '未设置'}`);
+    console.log(`  🧹 启动清数据: ${config.CLEAR_DATA_ON_START === 'true' ? '是' : '否'}`);
+    console.log('');
+    console.log(`  📊 市场:`);
+    console.log(`     15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
+    console.log(`     1小时场:  ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
+    console.log('');
+    console.log(`  💰 交易参数:`);
+    console.log(`     单笔最大: $${config.MAX_ORDER_SIZE_USD}`);
+    console.log(`     最小利润额: $${config.MIN_PROFIT_USD}`);
+    console.log(`     最小利润率: ${config.MIN_ARBITRAGE_PERCENT}%`);
     const initial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';
     const final = config.MAX_ARBITRAGE_PERCENT_FINAL || '15';
     const tighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
-    console.log(`  敞口限制: ${initial}% → ${final}%（${tighten}分钟内收紧）`);
-    console.log(`  深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
+    console.log(`     组合成本下限: $${(1 - parseFloat(initial)/100).toFixed(2)} → $${(1 - parseFloat(final)/100).toFixed(2)}（${tighten}分钟内收紧）`);
+    console.log(`     深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
     console.log('');
-    console.log('  🚨 止损配置:');
-    console.log(`  止损功能: ${config.STOP_LOSS_ENABLED === 'false' ? '❌ 关闭' : '✅ 开启'}`);
+    console.log(`  🚨 止损配置:`);
+    console.log(`     止损功能: ${config.STOP_LOSS_ENABLED === 'false' ? '❌ 关闭' : '✅ 开启'}`);
     if (config.STOP_LOSS_ENABLED !== 'false') {
-        console.log(`  监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
-        console.log(`  组合阈值: $${config.STOP_LOSS_COST_THRESHOLD || '0.6'}`);
-        const ratioVal = parseFloat(config.STOP_LOSS_RISK_RATIO || '0.7');
-        const ratioPercent = ratioVal > 1 ? ratioVal : ratioVal * 100;  // 兼容 70 或 0.7 格式
-        console.log(`  风险比例: ≥${ratioPercent.toFixed(0)}%`);
-        console.log(`  最小次数: ≥${config.STOP_LOSS_MIN_TRIGGER_COUNT || '30'} 次`);
+        console.log(`     监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
+        console.log(`     风险阈值: 组合价格 < $${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`);
+        const ratioVal = parseFloat(config.STOP_LOSS_RISK_RATIO || '60');
+        const ratioPercent = ratioVal > 1 ? ratioVal : ratioVal * 100;
+        console.log(`     触发条件: 比例 ≥${ratioPercent.toFixed(0)}% 且 次数 ≥${config.STOP_LOSS_MIN_TRIGGER_COUNT || '100'}`);
     }
     console.log('');
+    
+    // 参数关系说明
+    console.log(`${colors.bright}📊 参数关系图${colors.reset}`);
+    console.log('');
+    console.log('  有效交易区间：');
+    console.log('  ┌─────────────────────────────────────────────────────┐');
+    console.log(`  │  $${(1 - parseFloat(initial)/100).toFixed(2)} ─────────────────────────────── $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100)).toFixed(2)}  │`);
+    console.log('  │    ↑                                         ↑     │');
+    console.log('  │  组合成本下限                          利润率下限   │');
+    console.log('  │  (敞口限制)                            (MIN_ARB%)   │');
+    console.log('  └─────────────────────────────────────────────────────┘');
+    console.log('');
+    console.log(`  ⚠️  组合成本 < $${(1 - parseFloat(initial)/100).toFixed(2)} 时跳过（敞口过大）`);
+    console.log(`  ⚠️  组合成本 > $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100)).toFixed(2)} 时跳过（利润率过低）`);
+    console.log('');
+    
+    log.success('配置已保存到 .env');
     log.success('启动命令: npm run dev');
     console.log('');
     
@@ -379,6 +445,3 @@ main().catch((error) => {
     rl.close();
     process.exit(1);
 });
-
-
-
