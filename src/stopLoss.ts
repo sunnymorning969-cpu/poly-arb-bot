@@ -68,16 +68,16 @@ export interface EventSummary {
 }
 
 // 已触发止损的记录（防止重复触发）
-const triggeredStopLoss = new Map<string, StopLossState>();
+const triggeredStopLoss = new Map<TimeGroup, StopLossState>();
 
 // 价格追踪记录
-const priceTrackers = new Map<string, PriceTracker>();
+const priceTrackers = new Map<TimeGroup, PriceTracker>();
 
 // 上次检查时间
 let lastCheckTime = 0;
 
 // Token 映射缓存（从 scanner 获取）
-let tokenMapCache: Map<string, { upTokenId: string; downTokenId: string; endDate: string }> = new Map();
+let tokenMapCache: Map<TimeGroup, { upTokenId: string; downTokenId: string; endDate: string }> = new Map();
 
 /**
  * 更新 Token 映射（由 scanner 调用）
@@ -159,8 +159,11 @@ export const checkStopLossSignals = (): StopLossState[] => {
             priceTrackers.set(timeGroup, tracker);
         }
         
+        // 确保 tracker 非空（TypeScript 类型保护）
+        const currentTracker = tracker;
+        
         // 记录价格历史
-        tracker.priceHistory.push({
+        currentTracker.priceHistory.push({
             time: now,
             combinedBid,
             upBid,
@@ -168,14 +171,14 @@ export const checkStopLossSignals = (): StopLossState[] => {
         });
         
         // 更新整个事件周期的统计
-        tracker.totalCheckCount++;
+        currentTracker.totalCheckCount++;
         if (combinedBid < CONFIG.STOP_LOSS_COST_THRESHOLD) {
-            tracker.totalBelowThreshold++;
+            currentTracker.totalBelowThreshold++;
         }
         
         // 限制历史记录大小（保留最近1000条）
-        if (tracker.priceHistory.length > 1000) {
-            tracker.priceHistory = tracker.priceHistory.slice(-500);
+        if (currentTracker.priceHistory.length > 1000) {
+            currentTracker.priceHistory = currentTracker.priceHistory.slice(-500);
         }
         
         // 如果事件已结束，清除追踪器
@@ -191,44 +194,44 @@ export const checkStopLossSignals = (): StopLossState[] => {
         }
         
         // 进入风险窗口，开始统计
-        if (tracker.riskWindowStartTime === 0) {
-            tracker.riskWindowStartTime = now;
-            tracker.riskCheckCount = 0;
-            tracker.riskTriggerCount = 0;
+        if (currentTracker.riskWindowStartTime === 0) {
+            currentTracker.riskWindowStartTime = now;
+            currentTracker.riskCheckCount = 0;
+            currentTracker.riskTriggerCount = 0;
             Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒`);
         }
         
         // 更新风险窗口统计
-        tracker.riskCheckCount++;
+        currentTracker.riskCheckCount++;
         
         // 只检查组合成本阈值（移除单边阈值判断）
         const isRiskSignal = combinedBid < CONFIG.STOP_LOSS_COST_THRESHOLD;
         
         if (isRiskSignal) {
-            tracker.riskTriggerCount++;
+            currentTracker.riskTriggerCount++;
         }
         
         // 计算风险比例
-        const riskRatio = tracker.riskCheckCount > 0 
-            ? tracker.riskTriggerCount / tracker.riskCheckCount 
+        const riskRatio = currentTracker.riskCheckCount > 0 
+            ? currentTracker.riskTriggerCount / currentTracker.riskCheckCount 
             : 0;
         
         // 每10次检查打印一次状态
-        if (tracker.riskCheckCount % 10 === 0) {
-            Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 阈值: ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}% & ${MIN_TRIGGER_COUNT}次`);
+        if (currentTracker.riskCheckCount % 10 === 0) {
+            Logger.info(`📊 [${timeGroup}] 风险监控: ${currentTracker.riskTriggerCount}/${currentTracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 阈值: ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}% & ${MIN_TRIGGER_COUNT}次`);
         }
         
         // 检查是否触发止损条件
         // 条件1：风险比例超过阈值
         // 条件2：绝对次数超过最小值
-        if (riskRatio >= RISK_RATIO_THRESHOLD && tracker.riskTriggerCount >= MIN_TRIGGER_COUNT) {
+        if (riskRatio >= RISK_RATIO_THRESHOLD && currentTracker.riskTriggerCount >= MIN_TRIGGER_COUNT) {
             // 分析价格趋势
-            const trendAnalysis = analyzePriceTrend(tracker.priceHistory);
+            const trendAnalysis = analyzePriceTrend(currentTracker.priceHistory);
             
             const state: StopLossState = {
                 timeGroup,
                 triggeredAt: now,
-                reason: `风险比例 ${(riskRatio * 100).toFixed(1)}% ≥ ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}%，触发 ${tracker.riskTriggerCount} 次 ≥ ${MIN_TRIGGER_COUNT} 次。趋势: ${trendAnalysis}`,
+                reason: `风险比例 ${(riskRatio * 100).toFixed(1)}% ≥ ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}%，触发 ${currentTracker.riskTriggerCount} 次 ≥ ${MIN_TRIGGER_COUNT} 次。趋势: ${trendAnalysis}`,
                 upBid,
                 downBid,
                 combinedBid,
