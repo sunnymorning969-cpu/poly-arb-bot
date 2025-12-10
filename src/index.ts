@@ -165,31 +165,29 @@ const selectOpportunities = (
         // ============ 止损/对冲检查（最高优先级）============
         const pauseCheck = shouldPauseTrading(opp.timeGroup);
         
-        // 如果是对冲交易，跳过止损检查，静默执行
+        // 如果是对冲交易，直接执行，不需要其他检查
         if (opp.isHedge) {
             selected.push(opp);
             continue;
         }
         
         if (pauseCheck.pause) {
-            // 对冲已完成时静默等待，不打印日志
-            continue;
+            continue;  // 对冲已完成，静默等待
         }
         
-        // 对冲模式：跳过常规套利，等待对冲机会（静默，不刷屏）
         if (pauseCheck.shouldHedge) {
-            continue;
+            continue;  // 对冲模式，跳过常规套利
         }
         
-        // ============ 最终验证 ============
+        // ============ 以下检查仅适用于常规套利 ============
         // 1. 价格有效性检查
         if (opp.upAskPrice < 0.01 || opp.downAskPrice < 0.01) {
-            continue;  // 跳过异常价格
+            continue;
         }
         
-        // 2. 深度检查（必须有至少 1 share 可买）
+        // 2. 深度检查
         if (opp.upAskSize < 1 || opp.downAskSize < 1) {
-            continue;  // 跳过深度不足
+            continue;
         }
         
         // 3. buy_both 必须满足合计 < $1.00

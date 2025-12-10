@@ -178,43 +178,55 @@ export const calculatePoolPayouts = (summary: GroupPositionSummary): {
  * 计算每个池子需要补仓多少（同池对冲）
  * 
  * 简单逻辑：让两边 shares 数量相等
- * - BTC 池：补 BTC Down 使得 Down shares = Up shares
- * - ETH 池：补 ETH Up 使得 Up shares = Down shares
- * 
- * 这样无论结果如何，收回金额 = min(Up, Down) = 两边相等的数量
+ * 根据实际仓位结构决定补哪边
  */
 export const calculateHedgeNeeded = (
     summary: GroupPositionSummary,
+    btcUpPrice: number,
     btcDownPrice: number,
-    ethUpPrice: number
+    ethUpPrice: number,
+    ethDownPrice: number
 ): {
     needHedge: boolean;
+    btcUpNeeded: number;      // BTC 池需要补的 BTC Up
     btcDownNeeded: number;    // BTC 池需要补的 BTC Down
     ethUpNeeded: number;      // ETH 池需要补的 ETH Up
+    ethDownNeeded: number;    // ETH 池需要补的 ETH Down
     hedgeCost: number;
-    btcDeficit: number;       // BTC 池 shares 差距
-    ethDeficit: number;       // ETH 池 shares 差距
 } => {
-    // ========== BTC 池：让 Down = Up ==========
-    // 跨池套利买的是 BTC Up，所以 Up 多，Down 少
-    // 需要补 Down 使得 Down = Up
-    const btcDownNeeded = Math.max(0, Math.ceil(summary.btcUpShares - summary.btcDownShares));
+    // ========== BTC 池：让两边相等 ==========
+    let btcUpNeeded = 0;
+    let btcDownNeeded = 0;
+    if (summary.btcUpShares > summary.btcDownShares) {
+        // Up 多，需要补 Down
+        btcDownNeeded = Math.ceil(summary.btcUpShares - summary.btcDownShares);
+    } else if (summary.btcDownShares > summary.btcUpShares) {
+        // Down 多，需要补 Up
+        btcUpNeeded = Math.ceil(summary.btcDownShares - summary.btcUpShares);
+    }
     
-    // ========== ETH 池：让 Up = Down ==========
-    // 跨池套利买的是 ETH Down，所以 Down 多，Up 少
-    // 需要补 Up 使得 Up = Down
-    const ethUpNeeded = Math.max(0, Math.ceil(summary.ethDownShares - summary.ethUpShares));
+    // ========== ETH 池：让两边相等 ==========
+    let ethUpNeeded = 0;
+    let ethDownNeeded = 0;
+    if (summary.ethUpShares > summary.ethDownShares) {
+        // Up 多，需要补 Down
+        ethDownNeeded = Math.ceil(summary.ethUpShares - summary.ethDownShares);
+    } else if (summary.ethDownShares > summary.ethUpShares) {
+        // Down 多，需要补 Up
+        ethUpNeeded = Math.ceil(summary.ethDownShares - summary.ethUpShares);
+    }
     
-    const needHedge = btcDownNeeded > 0 || ethUpNeeded > 0;
-    const hedgeCost = btcDownNeeded * btcDownPrice + ethUpNeeded * ethUpPrice;
+    const needHedge = btcUpNeeded > 0 || btcDownNeeded > 0 || ethUpNeeded > 0 || ethDownNeeded > 0;
+    const hedgeCost = btcUpNeeded * btcUpPrice + btcDownNeeded * btcDownPrice + 
+                      ethUpNeeded * ethUpPrice + ethDownNeeded * ethDownPrice;
     
     return {
         needHedge,
+        btcUpNeeded,
         btcDownNeeded,
         ethUpNeeded,
+        ethDownNeeded,
         hedgeCost,
-        btcDeficit: btcDownNeeded,  // shares 差距
-        ethDeficit: ethUpNeeded,    // shares 差距
     };
 };
 
@@ -233,7 +245,7 @@ export const startHedging = (timeGroup: TimeGroup): void => {
         startTime: Date.now(),
         totalHedgeCost: 0,
         hedgeCount: 0,
-        lastLogTime: 0,  // 第一次立即打印
+        lastLogTime: Date.now(),  // 设置为当前时间，避免重复打印
     });
     
     // 更新全局统计
