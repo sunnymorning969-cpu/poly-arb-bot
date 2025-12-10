@@ -897,8 +897,8 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     ): ArbitrageOpportunity | null => {
         const book = side === 'up' ? market.upBook : market.downBook;
         const token = side === 'up' ? market.upToken : market.downToken;
-        const maxSharesPerTrade = Math.floor(CONFIG.MAX_ORDER_SIZE_USD / book.bestAsk);
-        const shares = Math.min(sharesNeeded, book.bestAskSize, maxSharesPerTrade);
+        // 对冲补仓无金额限制，只受市场深度限制，尽快完成
+        const shares = Math.min(sharesNeeded, book.bestAskSize);
         
         if (shares < 1) return null;
         
@@ -940,17 +940,20 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
         };
     };
     
-    // 生成对冲机会（每次只生成一个方向，避免并行问题）
+    // 同时生成 BTC 和 ETH 的对冲机会（并行补仓，加快速度）
     if (remaining.btcUp > 0) {
         const opp = createHedgeOpp(btcMarket, 'up', remaining.btcUp, 'btcUp');
         if (opp) opportunities.push(opp);
-    } else if (remaining.btcDown > 0) {
+    }
+    if (remaining.btcDown > 0) {
         const opp = createHedgeOpp(btcMarket, 'down', remaining.btcDown, 'btcDown');
         if (opp) opportunities.push(opp);
-    } else if (remaining.ethUp > 0) {
+    }
+    if (remaining.ethUp > 0) {
         const opp = createHedgeOpp(ethMarket, 'up', remaining.ethUp, 'ethUp');
         if (opp) opportunities.push(opp);
-    } else if (remaining.ethDown > 0) {
+    }
+    if (remaining.ethDown > 0) {
         const opp = createHedgeOpp(ethMarket, 'down', remaining.ethDown, 'ethDown');
         if (opp) opportunities.push(opp);
     }

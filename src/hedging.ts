@@ -36,9 +36,9 @@ const hedgeStates = new Map<TimeGroup, HedgeState>();
 // 对冲日志控制
 const HEDGE_LOG_INTERVAL_MS = 5000;  // 每5秒最多打印一次对冲日志
 
-// 对冲执行冷却（防止重复下单）
+// 对冲执行 - 无冷却，尽快完成
 const lastHedgeExecution = new Map<TimeGroup, number>();
-const HEDGE_COOLDOWN_MS = 1000;  // 每秒最多执行一次对冲
+const HEDGE_COOLDOWN_MS = 0;  // 无冷却
 
 export const shouldPrintHedgeLog = (timeGroup: TimeGroup): boolean => {
     const state = hedgeStates.get(timeGroup);
