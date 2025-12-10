@@ -76,6 +76,9 @@ const priceTrackers = new Map<TimeGroup, PriceTracker>();
 // 上次检查时间
 let lastCheckTime = 0;
 
+// 上次日志时间（控制日志频率）
+let lastLogTime = 0;
+
 // 单个市场的 Token 信息
 interface MarketTokens {
     upTokenId: string;
@@ -88,6 +91,112 @@ let tokenMapCache: Map<TimeGroup, {
     btc?: MarketTokens;
     eth?: MarketTokens;
 }> = new Map();
+
+/**
+ * 记录套利机会（由 scanner 调用）
+ * 
+ * 简单逻辑：
+ * - 每次扫描到套利机会，记录组合价格
+ * - 统计低于风险阈值的次数占总次数的比例
+ * 
+ * @param timeGroup 时间组
+ * @param combinedCost 组合价格（Up Ask + Down Ask）
+ * @param endDate 事件结束时间
+ */
+export const recordArbitrageOpportunity = (
+    timeGroup: TimeGroup,
+    combinedCost: number,
+    endDate: string
+): void => {
+    if (!CONFIG.STOP_LOSS_ENABLED) return;
+    
+    const now = Date.now();
+    const endTime = new Date(endDate).getTime();
+    const secondsToEnd = (endTime - now) / 1000;
+    
+    // 获取或创建 tracker
+    let tracker = priceTrackers.get(timeGroup);
+    if (!tracker) {
+        tracker = {
+            timeGroup,
+            startTime: now,
+            priceHistory: [],
+            totalCheckCount: 0,
+            totalBelowThreshold: 0,
+            riskCheckCount: 0,
+            riskTriggerCount: 0,
+            riskWindowStartTime: 0,
+        };
+        priceTrackers.set(timeGroup, tracker);
+    }
+    
+    // 记录价格历史
+    tracker.priceHistory.push({
+        time: now,
+        combinedBid: combinedCost,  // 存储组合价格
+        upBid: 0,
+        downBid: 0,
+    });
+    
+    // 限制历史大小
+    if (tracker.priceHistory.length > 1000) {
+        tracker.priceHistory = tracker.priceHistory.slice(-500);
+    }
+    
+    // 更新整个事件周期统计
+    tracker.totalCheckCount++;
+    if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD) {
+        tracker.totalBelowThreshold++;
+    }
+    
+    // 检查是否进入风险监控窗口
+    if (secondsToEnd <= 0 || secondsToEnd > CONFIG.STOP_LOSS_WINDOW_SEC) {
+        return;  // 不在风险窗口内
+    }
+    
+    // 进入风险窗口
+    if (tracker.riskWindowStartTime === 0) {
+        tracker.riskWindowStartTime = now;
+        tracker.riskCheckCount = 0;
+        tracker.riskTriggerCount = 0;
+        Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒`);
+    }
+    
+    // 更新风险窗口统计
+    tracker.riskCheckCount++;
+    if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD) {
+        tracker.riskTriggerCount++;
+    }
+    
+    // 计算风险比例
+    const riskRatio = tracker.riskTriggerCount / tracker.riskCheckCount;
+    
+    // 每10次打印一次日志
+    if (tracker.riskCheckCount % 10 === 0) {
+        Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 当前=$${combinedCost.toFixed(2)} | 阈值: <$${CONFIG.STOP_LOSS_COST_THRESHOLD} ≥${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}% & ${CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT}次`);
+    }
+    
+    // 立即检查是否满足止损条件（不等到 checkStopLossSignals）
+    // 这样 shouldPauseTrading 可以立即生效，阻止后续交易
+    if (!triggeredStopLoss.has(timeGroup) &&
+        riskRatio >= CONFIG.STOP_LOSS_RISK_RATIO && 
+        tracker.riskTriggerCount >= CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT) {
+        
+        // 标记为已触发（让 shouldPauseTrading 立即生效）
+        const state: StopLossState = {
+            timeGroup,
+            triggeredAt: now,
+            reason: `风险比例 ${(riskRatio * 100).toFixed(1)}% ≥ ${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}%，触发 ${tracker.riskTriggerCount} 次 ≥ ${CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT} 次`,
+            upBid: 0,
+            downBid: 0,
+            combinedBid: combinedCost,
+        };
+        triggeredStopLoss.set(timeGroup, state);
+        
+        Logger.warning(`🚨 止损条件满足 [${timeGroup}]: ${state.reason}`);
+        Logger.warning(`   当前组合价格: $${combinedCost.toFixed(3)}`);
+    }
+};
 
 /**
  * 更新 Token 映射（由 scanner 调用）
@@ -108,174 +217,52 @@ export const updateTokenMap = (
     entry[asset] = { upTokenId, downTokenId, endDate };
 };
 
+// 记录已执行止损的 timeGroup（防止重复执行）
+const executedStopLoss = new Set<TimeGroup>();
+
 /**
- * 检查是否需要止损
- * 返回需要止损的时间组列表
+ * 检查是否需要执行止损
  * 
- * 新逻辑：
- * 1. 持续追踪整个事件周期的价格
- * 2. 从倒数第三分钟（180秒）开始统计
- * 3. 统计低于阈值的次数占总检查次数的比例
- * 4. 如果比例 > 70% 且 绝对次数 > 30 次，触发止损
+ * 逻辑：
+ * - 止损条件由 recordArbitrageOpportunity 检测并标记
+ * - 这里返回已标记但还没执行的止损，供主循环执行
  */
 export const checkStopLossSignals = (): StopLossState[] => {
     if (!CONFIG.STOP_LOSS_ENABLED) {
         return [];
     }
     
-    const now = Date.now();
-    
-    // 控制检查频率
-    if (now - lastCheckTime < CONFIG.STOP_LOSS_CHECK_INTERVAL_MS) {
-        return [];
-    }
-    lastCheckTime = now;
-    
     const signals: StopLossState[] = [];
     
-    // 止损参数
-    const RISK_WINDOW_SEC = CONFIG.STOP_LOSS_WINDOW_SEC;           // 风险监控窗口（默认180秒=3分钟）
-    const RISK_RATIO_THRESHOLD = CONFIG.STOP_LOSS_RISK_RATIO;     // 风险比例阈值（默认0.7=70%）
-    const MIN_TRIGGER_COUNT = CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT; // 最小触发次数（默认30次）
-    
-    // 检查每个时间组
-    for (const [timeGroup, markets] of tokenMapCache) {
-        // 跳过已触发的
-        if (triggeredStopLoss.has(timeGroup)) {
-            continue;
+    // 找出已触发但还没执行的止损
+    for (const [timeGroup, state] of triggeredStopLoss) {
+        if (executedStopLoss.has(timeGroup)) {
+            continue;  // 已执行过
         }
         
-        // 需要两个市场都有数据才能计算跨池子组合
-        if (!markets.btc || !markets.eth) {
-            continue;
-        }
-        
-        const endTime = new Date(markets.btc.endDate).getTime();
-        const secondsToEnd = (endTime - now) / 1000;
-        
-        // 获取当前价格（bid 价格，即可卖出价格）
-        // 两种跨池子组合：
-        // 1. BTC Up + ETH Down
-        // 2. ETH Up + BTC Down
-        const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
-        const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
-        const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
-        const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
-        
-        if (!btcUpBook || !btcDownBook || !ethUpBook || !ethDownBook) {
-            continue;  // 没有价格数据
-        }
-        
-        // 计算两种跨池子组合的价格
-        const combo1Bid = btcUpBook.bestBid + ethDownBook.bestBid;  // BTC↑ETH↓
-        const combo2Bid = ethUpBook.bestBid + btcDownBook.bestBid;  // ETH↑BTC↓
-        
-        // 使用两者中较低的价格作为风险指标（更保守）
-        const combinedBid = Math.min(combo1Bid, combo2Bid);
-        const upBid = combo1Bid <= combo2Bid ? btcUpBook.bestBid : ethUpBook.bestBid;
-        const downBid = combo1Bid <= combo2Bid ? ethDownBook.bestBid : btcDownBook.bestBid;
-        
-        // 获取或创建价格追踪器
-        let tracker = priceTrackers.get(timeGroup);
-        if (!tracker) {
-            tracker = {
-                timeGroup,
-                startTime: now,
-                priceHistory: [],
-                totalCheckCount: 0,
-                totalBelowThreshold: 0,
-                riskCheckCount: 0,
-                riskTriggerCount: 0,
-                riskWindowStartTime: 0,
-            };
-            priceTrackers.set(timeGroup, tracker);
-        }
-        
-        // 确保 tracker 非空（TypeScript 类型保护）
-        const currentTracker = tracker;
-        
-        // 记录价格历史
-        currentTracker.priceHistory.push({
-            time: now,
-            combinedBid,
-            upBid,
-            downBid,
-        });
-        
-        // 更新整个事件周期的统计
-        currentTracker.totalCheckCount++;
-        if (combinedBid < CONFIG.STOP_LOSS_COST_THRESHOLD) {
-            currentTracker.totalBelowThreshold++;
-        }
-        
-        // 限制历史记录大小（保留最近1000条）
-        if (currentTracker.priceHistory.length > 1000) {
-            currentTracker.priceHistory = currentTracker.priceHistory.slice(-500);
-        }
-        
-        // 如果事件已结束，清除追踪器
-        if (secondsToEnd <= 0) {
-            priceTrackers.delete(timeGroup);
-            continue;
-        }
-        
-        // 检查是否进入风险监控窗口（倒数第 RISK_WINDOW_SEC 秒）
-        if (secondsToEnd > RISK_WINDOW_SEC) {
-            // 还没进入风险窗口，只记录价格，不做止损判断
-            continue;
-        }
-        
-        // 进入风险窗口，开始统计
-        if (currentTracker.riskWindowStartTime === 0) {
-            currentTracker.riskWindowStartTime = now;
-            currentTracker.riskCheckCount = 0;
-            currentTracker.riskTriggerCount = 0;
-            Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒`);
-        }
-        
-        // 更新风险窗口统计
-        currentTracker.riskCheckCount++;
-        
-        // 只检查组合成本阈值（移除单边阈值判断）
-        const isRiskSignal = combinedBid < CONFIG.STOP_LOSS_COST_THRESHOLD;
-        
-        if (isRiskSignal) {
-            currentTracker.riskTriggerCount++;
-        }
-        
-        // 计算风险比例
-        const riskRatio = currentTracker.riskCheckCount > 0 
-            ? currentTracker.riskTriggerCount / currentTracker.riskCheckCount 
-            : 0;
-        
-        // 每10次检查打印一次状态
-        if (currentTracker.riskCheckCount % 10 === 0) {
-            Logger.info(`📊 [${timeGroup}] 风险监控: ${currentTracker.riskTriggerCount}/${currentTracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 阈值: ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}% & ${MIN_TRIGGER_COUNT}次`);
-        }
-        
-        // 检查是否触发止损条件
-        // 条件1：风险比例超过阈值
-        // 条件2：绝对次数超过最小值
-        if (riskRatio >= RISK_RATIO_THRESHOLD && currentTracker.riskTriggerCount >= MIN_TRIGGER_COUNT) {
-            // 分析价格趋势
-            const trendAnalysis = analyzePriceTrend(currentTracker.priceHistory);
+        // 获取最新的 Bid 价格用于止损执行
+        const markets = tokenMapCache.get(timeGroup);
+        if (markets?.btc && markets?.eth) {
+            const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+            const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
+            const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
+            const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
             
-            const state: StopLossState = {
-                timeGroup,
-                triggeredAt: now,
-                reason: `风险比例 ${(riskRatio * 100).toFixed(1)}% ≥ ${(RISK_RATIO_THRESHOLD * 100).toFixed(0)}%，触发 ${currentTracker.riskTriggerCount} 次 ≥ ${MIN_TRIGGER_COUNT} 次。趋势: ${trendAnalysis}`,
-                upBid,
-                downBid,
-                combinedBid,
-            };
-            
-            signals.push(state);
-            triggeredStopLoss.set(timeGroup, state);
-            
-            Logger.warning(`🚨 止损触发 [${timeGroup}]: ${state.reason}`);
-            Logger.warning(`   当前价格: Up=$${upBid.toFixed(3)} Down=$${downBid.toFixed(3)} 合计=$${combinedBid.toFixed(3)}`);
-            Logger.warning(`   距离结束: ${secondsToEnd.toFixed(0)} 秒`);
+            if (btcUpBook && btcDownBook && ethUpBook && ethDownBook) {
+                const combo1Bid = btcUpBook.bestBid + ethDownBook.bestBid;
+                const combo2Bid = ethUpBook.bestBid + btcDownBook.bestBid;
+                state.combinedBid = Math.min(combo1Bid, combo2Bid);
+                state.upBid = combo1Bid <= combo2Bid ? btcUpBook.bestBid : ethUpBook.bestBid;
+                state.downBid = combo1Bid <= combo2Bid ? ethDownBook.bestBid : btcDownBook.bestBid;
+            }
         }
+        
+        // 标记为已执行
+        executedStopLoss.add(timeGroup);
+        signals.push(state);
+        
+        Logger.warning(`🚨 执行止损 [${timeGroup}]: ${state.reason}`);
+        Logger.warning(`   当前 Bid: Up=$${state.upBid.toFixed(3)} Down=$${state.downBid.toFixed(3)} 合计=$${state.combinedBid.toFixed(3)}`);
     }
     
     return signals;
@@ -330,6 +317,8 @@ export const getPositionsToStopLoss = (timeGroup: TimeGroup): Position[] => {
 
 /**
  * 执行止损卖出
+ * 
+ * 根据每个仓位的 slug 判断它属于 BTC 还是 ETH，用相应的 tokenId 来卖
  */
 export const executeStopLoss = async (
     sellFunction: (tokenId: string, shares: number, price: number, label: string) => Promise<{ success: boolean; received: number }>,
@@ -349,30 +338,64 @@ export const executeStopLoss = async (
         return { success: true, upSold: 0, downSold: 0, totalReceived: 0, totalCost: 0, savedLoss: 0 };
     }
     
-    let totalUpShares = 0;
-    let totalDownShares = 0;
+    const markets = tokenMapCache.get(signal.timeGroup);
+    if (!markets || !markets.btc || !markets.eth) {
+        Logger.error(`[止损] 找不到 ${signal.timeGroup} 的 token 信息`);
+        return { success: false, upSold: 0, downSold: 0, totalReceived: 0, totalCost: 0, savedLoss: 0 };
+    }
+    
+    // 根据仓位 slug 分类：BTC 仓位和 ETH 仓位
+    let btcUpShares = 0, btcDownShares = 0;
+    let ethUpShares = 0, ethDownShares = 0;
     let totalCost = 0;
     
     for (const pos of positions) {
-        totalUpShares += pos.upShares;
-        totalDownShares += pos.downShares;
+        const isBtc = pos.slug.includes('btc') || pos.slug.includes('bitcoin');
+        if (isBtc) {
+            btcUpShares += pos.upShares;
+            btcDownShares += pos.downShares;
+        } else {
+            ethUpShares += pos.upShares;
+            ethDownShares += pos.downShares;
+        }
         totalCost += pos.upCost + pos.downCost;
     }
     
-    Logger.warning(`🚨 [止损] ${signal.timeGroup}: 准备平仓 Up=${totalUpShares.toFixed(0)} Down=${totalDownShares.toFixed(0)} 成本=$${totalCost.toFixed(2)}`);
+    const totalUpShares = btcUpShares + ethUpShares;
+    const totalDownShares = btcDownShares + ethDownShares;
+    
+    Logger.warning(`🚨 [止损] ${signal.timeGroup}: 准备平仓`);
+    Logger.warning(`   BTC: Up=${btcUpShares.toFixed(0)} Down=${btcDownShares.toFixed(0)}`);
+    Logger.warning(`   ETH: Up=${ethUpShares.toFixed(0)} Down=${ethDownShares.toFixed(0)}`);
+    Logger.warning(`   总成本=$${totalCost.toFixed(2)}`);
+    
+    // 获取当前 Bid 价格
+    const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+    const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
+    const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
+    const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
+    
+    const btcUpBid = btcUpBook?.bestBid || 0;
+    const btcDownBid = btcDownBook?.bestBid || 0;
+    const ethUpBid = ethUpBook?.bestBid || 0;
+    const ethDownBid = ethDownBook?.bestBid || 0;
     
     // 模拟模式
     if (CONFIG.SIMULATION_MODE) {
-        const upReceived = totalUpShares * signal.upBid;
-        const downReceived = totalDownShares * signal.downBid;
-        const totalReceived = upReceived + downReceived;
-        const savedLoss = totalReceived;  // 如果不止损，双输时收回0
+        // 计算各部分回收金额
+        const btcUpReceived = btcUpShares * btcUpBid;
+        const btcDownReceived = btcDownShares * btcDownBid;
+        const ethUpReceived = ethUpShares * ethUpBid;
+        const ethDownReceived = ethDownShares * ethDownBid;
+        const totalReceived = btcUpReceived + btcDownReceived + ethUpReceived + ethDownReceived;
+        const savedLoss = totalReceived;
         
         Logger.success(`🔵 [模拟止损] ${signal.timeGroup}:`);
-        Logger.success(`   卖出 Up: ${totalUpShares.toFixed(0)} @ $${signal.upBid.toFixed(3)} = $${upReceived.toFixed(2)}`);
-        Logger.success(`   卖出 Down: ${totalDownShares.toFixed(0)} @ $${signal.downBid.toFixed(3)} = $${downReceived.toFixed(2)}`);
-        Logger.success(`   回收: $${totalReceived.toFixed(2)} | 成本: $${totalCost.toFixed(2)} | 亏损: $${(totalCost - totalReceived).toFixed(2)}`);
-        Logger.success(`   💡 如果不止损双输时亏损: $${totalCost.toFixed(2)} → 止损减少亏损: $${savedLoss.toFixed(2)}`);
+        if (btcUpShares > 0) Logger.success(`   卖出 BTC Up: ${btcUpShares.toFixed(0)} @ $${btcUpBid.toFixed(3)} = $${btcUpReceived.toFixed(2)}`);
+        if (btcDownShares > 0) Logger.success(`   卖出 BTC Down: ${btcDownShares.toFixed(0)} @ $${btcDownBid.toFixed(3)} = $${btcDownReceived.toFixed(2)}`);
+        if (ethUpShares > 0) Logger.success(`   卖出 ETH Up: ${ethUpShares.toFixed(0)} @ $${ethUpBid.toFixed(3)} = $${ethUpReceived.toFixed(2)}`);
+        if (ethDownShares > 0) Logger.success(`   卖出 ETH Down: ${ethDownShares.toFixed(0)} @ $${ethDownBid.toFixed(3)} = $${ethDownReceived.toFixed(2)}`);
+        Logger.success(`   回收: $${totalReceived.toFixed(2)} | 成本: $${totalCost.toFixed(2)} | 盈亏: $${(totalReceived - totalCost).toFixed(2)}`);
         
         // 发送 Telegram 通知
         await notifyStopLoss({
@@ -401,39 +424,40 @@ export const executeStopLoss = async (
         };
     }
     
-    // 实盘模式：执行卖出
-    const markets = tokenMapCache.get(signal.timeGroup);
-    if (!markets || !markets.btc || !markets.eth) {
-        Logger.error(`[止损] 找不到 ${signal.timeGroup} 的 token 信息`);
-        return { success: false, upSold: 0, downSold: 0, totalReceived: 0, totalCost: 0, savedLoss: 0 };
-    }
-    
-    let upReceived = 0;
-    let downReceived = 0;
-    
-    // 并行卖出（跨池子：BTC Up + ETH Down）
+    // 实盘模式：并行卖出所有持仓
+    let totalReceived = 0;
     const promises: Promise<void>[] = [];
     
-    if (totalUpShares > 0) {
+    if (btcUpShares > 0) {
         promises.push(
-            sellFunction(markets.btc.upTokenId, totalUpShares, signal.upBid, `${signal.timeGroup} BTC Up`)
-                .then(r => { if (r.success) upReceived = r.received; })
+            sellFunction(markets.btc.upTokenId, btcUpShares, btcUpBid, `${signal.timeGroup} BTC Up`)
+                .then(r => { if (r.success) totalReceived += r.received; })
         );
     }
-    
-    if (totalDownShares > 0) {
+    if (btcDownShares > 0) {
         promises.push(
-            sellFunction(markets.eth.downTokenId, totalDownShares, signal.downBid, `${signal.timeGroup} ETH Down`)
-                .then(r => { if (r.success) downReceived = r.received; })
+            sellFunction(markets.btc.downTokenId, btcDownShares, btcDownBid, `${signal.timeGroup} BTC Down`)
+                .then(r => { if (r.success) totalReceived += r.received; })
+        );
+    }
+    if (ethUpShares > 0) {
+        promises.push(
+            sellFunction(markets.eth.upTokenId, ethUpShares, ethUpBid, `${signal.timeGroup} ETH Up`)
+                .then(r => { if (r.success) totalReceived += r.received; })
+        );
+    }
+    if (ethDownShares > 0) {
+        promises.push(
+            sellFunction(markets.eth.downTokenId, ethDownShares, ethDownBid, `${signal.timeGroup} ETH Down`)
+                .then(r => { if (r.success) totalReceived += r.received; })
         );
     }
     
     await Promise.all(promises);
     
-    const totalReceived = upReceived + downReceived;
-    const savedLoss = totalReceived;  // 如果双输，这些钱就保住了
+    const savedLoss = totalReceived;
     
-    Logger.arbitrage(`🚨 [止损完成] ${signal.timeGroup}: 回收 $${totalReceived.toFixed(2)} | 成本 $${totalCost.toFixed(2)} | 减少亏损 $${savedLoss.toFixed(2)}`);
+    Logger.arbitrage(`🚨 [止损完成] ${signal.timeGroup}: 回收 $${totalReceived.toFixed(2)} | 成本 $${totalCost.toFixed(2)} | 盈亏 $${(totalReceived - totalCost).toFixed(2)}`);
     
     // 发送 Telegram 通知
     await notifyStopLoss({
@@ -468,13 +492,63 @@ export const executeStopLoss = async (
 export const clearTriggeredStopLoss = (timeGroup?: TimeGroup): void => {
     if (timeGroup) {
         triggeredStopLoss.delete(timeGroup);
+        executedStopLoss.delete(timeGroup);
         priceTrackers.delete(timeGroup);
         tokenMapCache.delete(timeGroup);
     } else {
         triggeredStopLoss.clear();
+        executedStopLoss.clear();
         priceTrackers.clear();
         tokenMapCache.clear();
     }
+};
+
+/**
+ * 检查是否应该暂停某个时间组的交易
+ * 
+ * 条件：
+ * 1. 止损功能开启
+ * 2. 已进入风险监控窗口
+ * 3. 风险比例已经很高（≥50%）或已触发止损
+ * 
+ * 这可以防止在止损条件即将满足时还在开新仓
+ */
+export const shouldPauseTrading = (timeGroup: TimeGroup): { pause: boolean; reason: string } => {
+    if (!CONFIG.STOP_LOSS_ENABLED) {
+        return { pause: false, reason: '' };
+    }
+    
+    // 如果已经触发止损，必须暂停
+    if (triggeredStopLoss.has(timeGroup)) {
+        return { pause: true, reason: '止损已触发' };
+    }
+    
+    const tracker = priceTrackers.get(timeGroup);
+    if (!tracker) {
+        return { pause: false, reason: '' };
+    }
+    
+    // 还没进入风险窗口，不暂停
+    if (tracker.riskWindowStartTime === 0) {
+        return { pause: false, reason: '' };
+    }
+    
+    // 已进入风险窗口，检查风险比例
+    const riskRatio = tracker.riskCheckCount > 0 
+        ? tracker.riskTriggerCount / tracker.riskCheckCount 
+        : 0;
+    
+    // 预警阈值：风险比例 ≥ 50% 时暂停新开仓
+    const PAUSE_THRESHOLD = 0.5;
+    
+    if (riskRatio >= PAUSE_THRESHOLD) {
+        return { 
+            pause: true, 
+            reason: `风险比例 ${(riskRatio * 100).toFixed(0)}% ≥ 50%，暂停开仓` 
+        };
+    }
+    
+    return { pause: false, reason: '' };
 };
 
 /**
@@ -612,3 +686,4 @@ export default {
     clearTriggeredStopLoss,
     getStopLossStatus,
 };
+

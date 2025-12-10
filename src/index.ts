@@ -15,7 +15,7 @@ import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
-import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary } from './stopLoss';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading } from './stopLoss';
 import { executeSell } from './executor';
 
 // 统计数据
@@ -161,6 +161,16 @@ const selectOpportunities = (
     for (const opp of opportunities) {
         if (selected.length >= CONFIG.MAX_PARALLEL_TRADES) break;
         
+        // ============ 止损暂停检查（最高优先级）============
+        const pauseCheck = shouldPauseTrading(opp.timeGroup);
+        if (pauseCheck.pause) {
+            // 只在第一次遇到时打印一次
+            if (selected.length === 0) {
+                Logger.warning(`🛑 ${opp.timeGroup} 暂停开仓: ${pauseCheck.reason}`);
+            }
+            continue;
+        }
+        
         // ============ 最终验证 ============
         // 1. 价格有效性检查
         if (opp.upAskPrice < 0.01 || opp.downAskPrice < 0.01) {
@@ -189,7 +199,7 @@ const selectOpportunities = (
             const upSource = isBtcUp ? 'BTC' : 'ETH';
             const downSource = isBtcDown ? 'BTC' : 'ETH';
             const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
-            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)} (当前限制${currentMaxArbitragePercent.toFixed(0)}%)，跳过`);
+            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: Ask=$${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)} (限制${currentMaxArbitragePercent.toFixed(0)}%)，跳过`);
             continue;
         }
         

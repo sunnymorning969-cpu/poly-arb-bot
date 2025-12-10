@@ -12,7 +12,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
-import { updateTokenMap, clearTriggeredStopLoss, printEventSummary } from './stopLoss';
+import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, recordArbitrageOpportunity } from './stopLoss';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -520,6 +520,9 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const crossPoolCost = cheapestUp.upBook.bestAsk + cheapestDown.downBook.bestAsk;
         const crossPoolProfit = (1 - crossPoolCost) * 100;
         const isCrossPool = cheapestUp.conditionId !== cheapestDown.conditionId;
+        
+        // 记录套利机会到止损模块（用于风险统计）
+        recordArbitrageOpportunity(timeGroup, crossPoolCost, cheapestUp.market.end_date_iso);
         
         // 预测组合买入后的成本
         const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
