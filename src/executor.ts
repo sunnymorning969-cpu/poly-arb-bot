@@ -14,6 +14,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { ArbitrageOpportunity } from './scanner';
 import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis } from './positions';
+import { recordHedgeCost } from './hedging';
 
 let clobClient: ClobClient | null = null;
 let provider: ethers.providers.JsonRpcProvider | null = null;
@@ -618,6 +619,11 @@ export const executeArbitrage = async (
     const timeTag = opportunity.timeGroup || '';
     
     if (success) {
+        // 如果是对冲交易，记录对冲成本
+        if (opportunity.isHedge && opportunity.timeGroup) {
+            recordHedgeCost(opportunity.timeGroup, totalCost);
+        }
+        
         // 获取当前时间组的累计成本（而不是全部仓位）
         const groupAnalysis = opportunity.timeGroup ? getGroupCostAnalysis(opportunity.timeGroup) : null;
         const groupCost = groupAnalysis?.totalCost || 0;

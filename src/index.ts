@@ -169,24 +169,20 @@ const selectOpportunities = (
         if (opp.isHedge) {
             // 对冲交易优先执行
             selected.push(opp);
-            Logger.warning(`🛡️ ${opp.timeGroup} 对冲补仓: BTC Down + ETH Up | 合计:$${opp.combinedCost.toFixed(3)}`);
+            // 根据实际买入显示
+            const buyingWhat = opp.tradingAction === 'buy_down_only' ? 'BTC Down' : 
+                              opp.tradingAction === 'buy_up_only' ? 'ETH Up' : '对冲';
+            Logger.warning(`🛡️ ${opp.timeGroup} 对冲补仓: ${buyingWhat} @ $${opp.combinedCost.toFixed(3)}`);
             continue;
         }
         
         if (pauseCheck.pause) {
-            // 只在第一次遇到时打印一次
-            if (selected.length === 0) {
-                Logger.warning(`🛑 ${opp.timeGroup} 暂停开仓: ${pauseCheck.reason}`);
-            }
+            // 对冲已完成时静默等待，不打印日志
             continue;
         }
         
-        // 对冲模式：跳过常规套利，等待对冲机会
+        // 对冲模式：跳过常规套利，等待对冲机会（静默，不刷屏）
         if (pauseCheck.shouldHedge) {
-            // 只在第一次遇到时打印一次
-            if (selected.length === 0) {
-                Logger.warning(`🛡️ ${opp.timeGroup} 进入对冲模式，跳过常规套利`);
-            }
             continue;
         }
         

@@ -23,6 +23,7 @@ import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
 import { notifyStopLoss } from './telegram';
+import { isHedgeCompleted } from './hedging';
 import { isHedgeCompleted, isHedging } from './hedging';
 
 // 止损状态追踪
@@ -185,6 +186,11 @@ export const recordArbitrageOpportunity = (
     // 计算风险比例
     const riskRatio = tracker.riskTriggerCount / tracker.riskCheckCount;
     
+    // 对冲已完成时，静默等待事件结束，不再打印日志
+    if (isHedgeCompleted(timeGroup)) {
+        return;  // 对冲已完成，不需要继续监控
+    }
+    
     // 每10秒打印一次日志（避免日志刷屏）
     if (now - tracker.lastLogTime >= 10000) {
         tracker.lastLogTime = now;
@@ -192,8 +198,8 @@ export const recordArbitrageOpportunity = (
         Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 组合=$${combinedCost.toFixed(2)} | 窗口已过${windowElapsed}秒 | 阈值: <$${CONFIG.STOP_LOSS_COST_THRESHOLD} ≥${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}%`);
     }
     
-    // 如果当前价格低于阈值，额外输出一条调试日志
-    if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD) {
+    // 如果当前价格低于阈值，额外输出一条调试日志（但已触发止损后不再打印）
+    if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD && !triggeredStopLoss.has(timeGroup)) {
         Logger.warning(`🚨 [${timeGroup}] 风险信号: 组合=$${combinedCost.toFixed(2)} < $${CONFIG.STOP_LOSS_COST_THRESHOLD} | 累计${tracker.riskTriggerCount}/${tracker.riskCheckCount}`);
     }
     

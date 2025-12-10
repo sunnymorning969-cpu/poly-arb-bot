@@ -159,10 +159,13 @@ export const calculatePoolPayouts = (summary: GroupPositionSummary): {
 };
 
 /**
- * 计算每个池子需要补仓多少才能保本（同池对冲）
+ * 计算每个池子需要补仓多少（同池对冲）
  * 
- * BTC 池：补 BTC Down 使得 min(BTC Up, BTC Down) >= BTC 成本
- * ETH 池：补 ETH Up 使得 min(ETH Up, ETH Down) >= ETH 成本
+ * 简单逻辑：让两边 shares 数量相等
+ * - BTC 池：补 BTC Down 使得 Down shares = Up shares
+ * - ETH 池：补 ETH Up 使得 Up shares = Down shares
+ * 
+ * 这样无论结果如何，收回金额 = min(Up, Down) = 两边相等的数量
  */
 export const calculateHedgeNeeded = (
     summary: GroupPositionSummary,
@@ -173,90 +176,18 @@ export const calculateHedgeNeeded = (
     btcDownNeeded: number;    // BTC 池需要补的 BTC Down
     ethUpNeeded: number;      // ETH 池需要补的 ETH Up
     hedgeCost: number;
-    btcDeficit: number;       // BTC 池缺口
-    ethDeficit: number;       // ETH 池缺口
+    btcDeficit: number;       // BTC 池 shares 差距
+    ethDeficit: number;       // ETH 池 shares 差距
 } => {
-    const poolPayouts = calculatePoolPayouts(summary);
+    // ========== BTC 池：让 Down = Up ==========
+    // 跨池套利买的是 BTC Up，所以 Up 多，Down 少
+    // 需要补 Down 使得 Down = Up
+    const btcDownNeeded = Math.max(0, Math.ceil(summary.btcUpShares - summary.btcDownShares));
     
-    let btcDownNeeded = 0;
-    let ethUpNeeded = 0;
-    
-    // ========== BTC 池对冲计算 ==========
-    // 持有 BTC Up shares，需要补 BTC Down 使得保本
-    // 
-    // 设补 x shares BTC Down @ 价格 p
-    // 新成本 = btcCost + x * p
-    // BTC 涨收回 = btcUpShares
-    // BTC 跌收回 = btcDownShares + x
-    // 
-    // 要保本：min(btcUpShares, btcDownShares + x) >= btcCost + x * p
-    // 
-    // 情况1：btcUpShares <= btcDownShares + x（Up 是瓶颈）
-    //   btcUpShares >= btcCost + x * p
-    //   x <= (btcUpShares - btcCost) / p
-    // 
-    // 情况2：btcDownShares + x < btcUpShares（Down 是瓶颈）
-    //   btcDownShares + x >= btcCost + x * p
-    //   btcDownShares - btcCost >= x * (p - 1)
-    //   x >= (btcCost - btcDownShares) / (1 - p)  （当 p < 1 时）
-    
-    if (!poolPayouts.btcBreakEven && poolPayouts.btcCost > 0) {
-        // BTC 池需要对冲
-        const btcDeficit = poolPayouts.btcCost - poolPayouts.btcMinPayout;
-        
-        if (btcDownPrice < 1) {
-            // 公式：x >= (成本 - 当前 Down shares) / (1 - Down 价格)
-            // 但我们要确保补仓后，min(Up, Down+x) >= 成本 + x*价格
-            // 
-            // 简化：让 Down + x = Up（平衡），然后确保这个值 >= 新成本
-            // x = Up - Down
-            // 新成本 = 旧成本 + x * p = 旧成本 + (Up - Down) * p
-            // 需要 Up >= 新成本
-            // Up >= 旧成本 + (Up - Down) * p
-            // Up - Up * p >= 旧成本 - Down * p
-            // Up * (1 - p) >= 旧成本 - Down * p
-            // 
-            // 如果 Up * (1-p) + Down * p >= 旧成本，则补到平衡就够了
-            // 否则需要更多
-            
-            const balanceShares = Math.max(0, summary.btcUpShares - summary.btcDownShares);
-            const balanceCost = balanceShares * btcDownPrice;
-            const newCost = poolPayouts.btcCost + balanceCost;
-            const newMinPayout = Math.min(summary.btcUpShares, summary.btcDownShares + balanceShares);
-            
-            if (newMinPayout >= newCost) {
-                btcDownNeeded = Math.ceil(balanceShares);
-            } else {
-                // 需要补更多，使用更精确的公式
-                // 设补 x shares，要 min(Up, Down+x) >= Cost + x*p
-                // 假设 Down + x 是瓶颈（通常如此）
-                // Down + x >= Cost + x*p
-                // x * (1-p) >= Cost - Down
-                // x >= (Cost - Down) / (1-p)
-                const neededFromDeficit = (poolPayouts.btcCost - summary.btcDownShares) / (1 - btcDownPrice);
-                btcDownNeeded = Math.ceil(Math.max(0, neededFromDeficit)) + 1;
-            }
-        }
-    }
-    
-    // ========== ETH 池对冲计算 ==========
-    // 持有 ETH Down shares，需要补 ETH Up 使得保本
-    if (!poolPayouts.ethBreakEven && poolPayouts.ethCost > 0) {
-        // ETH 池需要对冲
-        if (ethUpPrice < 1) {
-            const balanceShares = Math.max(0, summary.ethDownShares - summary.ethUpShares);
-            const balanceCost = balanceShares * ethUpPrice;
-            const newCost = poolPayouts.ethCost + balanceCost;
-            const newMinPayout = Math.min(summary.ethUpShares + balanceShares, summary.ethDownShares);
-            
-            if (newMinPayout >= newCost) {
-                ethUpNeeded = Math.ceil(balanceShares);
-            } else {
-                const neededFromDeficit = (poolPayouts.ethCost - summary.ethUpShares) / (1 - ethUpPrice);
-                ethUpNeeded = Math.ceil(Math.max(0, neededFromDeficit)) + 1;
-            }
-        }
-    }
+    // ========== ETH 池：让 Up = Down ==========
+    // 跨池套利买的是 ETH Down，所以 Down 多，Up 少
+    // 需要补 Up 使得 Up = Down
+    const ethUpNeeded = Math.max(0, Math.ceil(summary.ethDownShares - summary.ethUpShares));
     
     const needHedge = btcDownNeeded > 0 || ethUpNeeded > 0;
     const hedgeCost = btcDownNeeded * btcDownPrice + ethUpNeeded * ethUpPrice;
@@ -266,8 +197,8 @@ export const calculateHedgeNeeded = (
         btcDownNeeded,
         ethUpNeeded,
         hedgeCost,
-        btcDeficit: Math.max(0, poolPayouts.btcCost - poolPayouts.btcMinPayout),
-        ethDeficit: Math.max(0, poolPayouts.ethCost - poolPayouts.ethMinPayout),
+        btcDeficit: btcDownNeeded,  // shares 差距
+        ethDeficit: ethUpNeeded,    // shares 差距
     };
 };
 

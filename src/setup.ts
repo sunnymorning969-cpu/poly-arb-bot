@@ -334,20 +334,20 @@ const main = async () => {
         log.info('          优点：立即离场，不需要额外资金');
         log.info('          缺点：会有部分亏损');
         log.info('');
-        log.info('  hedge - 同池对冲保本（推荐）');
-        log.info('          检测到风险后，在各自池子内补仓对冲');
+        log.info('  hedge - 同池对冲（推荐）');
+        log.info('          检测到风险后，在各自池子内补仓使两边 shares 相等');
         log.info('');
-        log.info('          原有仓位：');
-        log.info('            BTC 池：BTC Up（跨池套利买入）');
-        log.info('            ETH 池：ETH Down（跨池套利买入）');
+        log.info('          原有仓位（跨池套利）：');
+        log.info('            BTC 池：大量 BTC Up，少量 BTC Down');
+        log.info('            ETH 池：少量 ETH Up，大量 ETH Down');
         log.info('');
-        log.info('          对冲补仓：');
-        log.info('            BTC 池：补 BTC Down → 无论 BTC 涨跌都保本');
-        log.info('            ETH 池：补 ETH Up → 无论 ETH 涨跌都保本');
+        log.info('          对冲补仓（让两边相等）：');
+        log.info('            BTC 池：补 BTC Down 至 = BTC Up');
+        log.info('            ETH 池：补 ETH Up 至 = ETH Down');
         log.info('');
         log.info('          结果分析：');
         log.info('            正常套利 → 双赢大赚 / 单赢小赚');
-        log.info('            触发对冲 → 保本（不赚不亏）');
+        log.info('            触发对冲 → 锁定收回金额，减少亏损');
         log.info('            效果：避免"双输"场景的 100% 亏损');
         log.info('═══════════════════════════════════════════════════════');
         const currentMode = config.STOP_LOSS_MODE || 'hedge';
@@ -448,8 +448,8 @@ const main = async () => {
         const modeLabel = mode === 'hedge' ? '🛡️ 同池对冲保本（推荐）' : '📉 平仓止损';
         console.log(`     止损模式: ${modeLabel}`);
         if (mode === 'hedge') {
-            console.log(`       └─ 检测风险后补仓: BTC池补Down + ETH池补Up`);
-            console.log(`       └─ 效果: 双赢赚钱 / 单赢小赚 / 风险保本`);
+            console.log(`       └─ 对冲逻辑: BTC池补Down至=Up，ETH池补Up至=Down`);
+            console.log(`       └─ 效果: 正常赚钱 / 触发对冲时锁定收回金额`);
         }
         console.log(`     监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
         console.log(`     风险阈值: 组合价格 < $${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`);
