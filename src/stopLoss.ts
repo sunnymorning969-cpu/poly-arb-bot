@@ -171,7 +171,8 @@ export const recordArbitrageOpportunity = (
         tracker.riskWindowStartTime = now;
         tracker.riskCheckCount = 0;
         tracker.riskTriggerCount = 0;
-        Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒`);
+        const endTimeStr = new Date(endTime).toLocaleTimeString('zh-CN');
+        Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒 (结束时间: ${endTimeStr})`);
     }
     
     // 更新风险窗口统计
@@ -186,7 +187,13 @@ export const recordArbitrageOpportunity = (
     // 每10秒打印一次日志（避免日志刷屏）
     if (now - tracker.lastLogTime >= 10000) {
         tracker.lastLogTime = now;
-        Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 当前=$${combinedCost.toFixed(2)} | 阈值: <$${CONFIG.STOP_LOSS_COST_THRESHOLD} ≥${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}% & ${CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT}次`);
+        const windowElapsed = Math.floor((now - tracker.riskWindowStartTime) / 1000);
+        Logger.info(`📊 [${timeGroup}] 风险监控: ${tracker.riskTriggerCount}/${tracker.riskCheckCount} (${(riskRatio * 100).toFixed(1)}%) | 组合=$${combinedCost.toFixed(2)} | 窗口已过${windowElapsed}秒 | 阈值: <$${CONFIG.STOP_LOSS_COST_THRESHOLD} ≥${(CONFIG.STOP_LOSS_RISK_RATIO * 100).toFixed(0)}%`);
+    }
+    
+    // 如果当前价格低于阈值，额外输出一条调试日志
+    if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD) {
+        Logger.warning(`🚨 [${timeGroup}] 风险信号: 组合=$${combinedCost.toFixed(2)} < $${CONFIG.STOP_LOSS_COST_THRESHOLD} | 累计${tracker.riskTriggerCount}/${tracker.riskCheckCount}`);
     }
     
     // 立即检查是否满足止损条件（不等到 checkStopLossSignals）

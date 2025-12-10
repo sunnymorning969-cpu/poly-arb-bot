@@ -199,7 +199,7 @@ const selectOpportunities = (
             const upSource = isBtcUp ? 'BTC' : 'ETH';
             const downSource = isBtcDown ? 'BTC' : 'ETH';
             const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
-            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: Ask=$${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)} (限制${currentMaxArbitragePercent.toFixed(0)}%)，跳过`);
+            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: 组合$${opp.combinedCost.toFixed(2)} (Up$${opp.upAskPrice.toFixed(2)}+Down$${opp.downAskPrice.toFixed(2)}) < $${minCombinedCost.toFixed(2)}，跳过`);
             continue;
         }
         
