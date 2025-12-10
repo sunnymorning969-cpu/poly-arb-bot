@@ -81,6 +81,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
+        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '0.1'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
         `MAX_ARBITRAGE_PERCENT_FINAL=${config.MAX_ARBITRAGE_PERCENT_FINAL || '15'}`,
         `MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=${config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13'}`,
@@ -234,6 +235,17 @@ const main = async () => {
         config.MIN_PROFIT_USD = '0.01';
     }
     
+    log.info('最小利润率：控制套利空间的下限，过滤掉利润率太低的交易');
+    log.info('例如：5% 意味着只做组合成本 < $0.95 的交易（利润率 ≥ 5%）');
+    log.info('利润率 = (1 - 组合成本) / 组合成本');
+    const currentMinArbPercent = config.MIN_ARBITRAGE_PERCENT || '0.1';
+    const minArbPercent = await question(`最小利润率 % (当前: ${currentMinArbPercent}): `);
+    if (minArbPercent && !isNaN(parseFloat(minArbPercent))) {
+        config.MIN_ARBITRAGE_PERCENT = minArbPercent;
+    } else if (!config.MIN_ARBITRAGE_PERCENT) {
+        config.MIN_ARBITRAGE_PERCENT = '0.1';
+    }
+    
     log.info('最大套利敞口（动态）：开盘波动大允许大敞口，后期逐渐收紧');
     log.info('公式：敞口从初始值线性收紧到最终值');
     
@@ -337,7 +349,8 @@ const main = async () => {
     console.log(`  15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);
-    console.log(`  最小利润: $${config.MIN_PROFIT_USD}`);
+    console.log(`  最小利润额: $${config.MIN_PROFIT_USD}`);
+    console.log(`  最小利润率: ${config.MIN_ARBITRAGE_PERCENT || '0.1'}%`);
     const initial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';
     const final = config.MAX_ARBITRAGE_PERCENT_FINAL || '15';
     const tighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
