@@ -257,9 +257,9 @@ const main = async () => {
     
     const currentTighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
     log.info(`收紧时长：在多少分钟内完成从初始到最终的收紧`);
-    const tighten = await question(`收紧时长(分钟) (当前: ${currentTighten}): `);
-    if (tighten && !isNaN(parseInt(tighten))) {
-        config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = tighten;
+    const tightenInput = await question(`收紧时长(分钟) (当前: ${currentTighten}): `);
+    if (tightenInput && !isNaN(parseInt(tightenInput))) {
+        config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = tightenInput;
     } else if (!config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES) {
         config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = '13';
     }
