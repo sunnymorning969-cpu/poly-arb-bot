@@ -790,14 +790,21 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     // 获取市场信息
     let btcMarket: {
         conditionId: string;
-        market: CryptoMarket;
+        market: PolymarketMarket;
         upToken: MarketToken;
         downToken: MarketToken;
         upBook: OrderBookData;
         downBook: OrderBookData;
     } | null = null;
     
-    let ethMarket: typeof btcMarket = null;
+    let ethMarket: {
+        conditionId: string;
+        market: PolymarketMarket;
+        upToken: MarketToken;
+        downToken: MarketToken;
+        upBook: OrderBookData;
+        downBook: OrderBookData;
+    } | null = null;
     
     for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
         const upBook = orderBookManager.getOrderBook(upToken.token_id);
@@ -854,10 +861,12 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     
     // ========== 生成 BTC 池对冲机会（补 BTC Down）==========
     if (hedgeInfo.btcDownNeeded > 0) {
+        // 每次最多补 100 shares，避免单笔过大
+        const maxSharesPerTrade = Math.floor(CONFIG.MAX_ORDER_SIZE_USD / btcMarket.downBook.bestAsk);
         const btcDownShares = Math.min(
             hedgeInfo.btcDownNeeded,
             btcMarket.downBook.bestAskSize,
-            CONFIG.MAX_SHARES_PER_TRADE
+            maxSharesPerTrade
         );
         
         if (btcDownShares >= 1) {
@@ -868,7 +877,7 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
                 upToken: {
                     token_id: '',  // 不买 Up
                     outcome: 'Up',
-                    price: '0',
+                    price: 0,
                 },
                 downToken: {
                     token_id: btcMarket.downToken.token_id,
@@ -920,11 +929,13 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     }
     
     // ========== 生成 ETH 池对冲机会（补 ETH Up）==========
-    if (hedgeInfo.ethUpNeeded > 0) {
+    if (hedgeInfo.ethUpNeeded > 0 && ethMarket) {
+        // 每次最多补的份数
+        const maxSharesPerTrade = Math.floor(CONFIG.MAX_ORDER_SIZE_USD / ethMarket.upBook.bestAsk);
         const ethUpShares = Math.min(
             hedgeInfo.ethUpNeeded,
             ethMarket.upBook.bestAskSize,
-            CONFIG.MAX_SHARES_PER_TRADE
+            maxSharesPerTrade
         );
         
         if (ethUpShares >= 1) {
@@ -940,7 +951,7 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
                 downToken: {
                     token_id: '',  // 不买 Down
                     outcome: 'Down',
-                    price: '0',
+                    price: 0,
                 },
                 timeGroup,
                 isCrossPool: false,  // 同池操作

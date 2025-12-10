@@ -17,6 +17,7 @@ import { initStorage, closeStorage, getStorageStatus, clearStorage } from './sto
 import { checkAndRedeem } from './redeemer';
 import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading } from './stopLoss';
 import { executeSell } from './executor';
+import { getGlobalHedgeStats } from './hedging';
 
 // 统计数据
 interface Stats {
@@ -468,6 +469,7 @@ const mainLoop = async () => {
                 // 发送运行统计
                 const overallStats = getOverallStats();
                 const posStats = getPositionStats();
+                const hedgeStats = getGlobalHedgeStats();
                 const runtime = Math.floor((Date.now() - stats.startTime.getTime()) / 1000 / 60);
                 await notifyRunningStats({
                     runtime,
@@ -478,6 +480,10 @@ const mainLoop = async () => {
                     winRate: overallStats.winRate,
                     activePositions: posStats.totalPositions,
                     pendingProfit: posStats.expectedProfit,
+                    // 对冲统计
+                    hedgeEvents: hedgeStats.totalHedgeEvents,
+                    hedgeCompleted: hedgeStats.completedHedgeEvents,
+                    hedgeCost: hedgeStats.totalHedgeCost,
                 });
                 
                 lastPositionReport = now;

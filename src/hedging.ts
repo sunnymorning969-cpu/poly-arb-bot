@@ -22,6 +22,21 @@ interface HedgeState {
 
 const hedgeStates = new Map<TimeGroup, HedgeState>();
 
+// 全局对冲统计（累计所有事件）
+interface HedgeStats {
+    totalHedgeEvents: number;     // 触发对冲的事件总数
+    completedHedgeEvents: number; // 成功保本的事件数
+    totalHedgeCost: number;       // 累计对冲成本
+    totalHedgeTrades: number;     // 累计对冲交易次数
+}
+
+const globalHedgeStats: HedgeStats = {
+    totalHedgeEvents: 0,
+    completedHedgeEvents: 0,
+    totalHedgeCost: 0,
+    totalHedgeTrades: 0,
+};
+
 // 获取时间组的所有仓位汇总
 interface GroupPositionSummary {
     btcUpShares: number;
@@ -273,7 +288,10 @@ export const startHedging = (timeGroup: TimeGroup): void => {
         hedgeCount: 0,
     });
     
-    Logger.warning(`🛡️ [${timeGroup}] 启动对冲保本模式，停止套利`);
+    // 更新全局统计
+    globalHedgeStats.totalHedgeEvents++;
+    
+    Logger.warning(`🛡️ [${timeGroup}] 启动对冲保本模式，停止套利 (累计第 ${globalHedgeStats.totalHedgeEvents} 次)`);
 };
 
 /**
@@ -281,10 +299,17 @@ export const startHedging = (timeGroup: TimeGroup): void => {
  */
 export const completeHedging = (timeGroup: TimeGroup): void => {
     const state = hedgeStates.get(timeGroup);
-    if (state) {
+    if (state && !state.isCompleted) {
         state.isCompleted = true;
+        
+        // 更新全局统计
+        globalHedgeStats.completedHedgeEvents++;
+        globalHedgeStats.totalHedgeCost += state.totalHedgeCost;
+        globalHedgeStats.totalHedgeTrades += state.hedgeCount;
+        
         Logger.success(`🛡️ [${timeGroup}] 对冲完成！已保本，等待事件结束`);
-        Logger.info(`   补仓 ${state.hedgeCount} 次，对冲成本 $${state.totalHedgeCost.toFixed(2)}`);
+        Logger.info(`   本次: 补仓 ${state.hedgeCount} 次，成本 $${state.totalHedgeCost.toFixed(2)}`);
+        Logger.info(`   累计: ${globalHedgeStats.completedHedgeEvents}/${globalHedgeStats.totalHedgeEvents} 次保本成功`);
     }
 };
 
@@ -366,6 +391,26 @@ export const printHedgeStatus = (timeGroup: TimeGroup): void => {
     Logger.info(`   ${totalEmoji} 总计: 成本$${poolPayouts.totalCost.toFixed(2)} | 最小收回$${poolPayouts.totalMinPayout.toFixed(0)} ${isBreakEven ? '≥ 保本' : '< 待补仓'}`);
 };
 
+/**
+ * 获取全局对冲统计
+ */
+export const getGlobalHedgeStats = (): {
+    totalHedgeEvents: number;      // 触发对冲的事件总数
+    completedHedgeEvents: number;  // 成功保本的事件数
+    totalHedgeCost: number;        // 累计对冲成本
+    totalHedgeTrades: number;      // 累计对冲交易次数
+    successRate: number;           // 保本成功率
+} => {
+    const successRate = globalHedgeStats.totalHedgeEvents > 0 
+        ? (globalHedgeStats.completedHedgeEvents / globalHedgeStats.totalHedgeEvents) * 100 
+        : 0;
+    
+    return {
+        ...globalHedgeStats,
+        successRate,
+    };
+};
+
 export default {
     getGroupPositionSummary,
     calculatePoolPayouts,
@@ -378,5 +423,6 @@ export default {
     recordHedgeCost,
     getHedgeSummary,
     printHedgeStatus,
+    getGlobalHedgeStats,
 };
 

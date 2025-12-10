@@ -639,6 +639,10 @@ export const notifyRunningStats = async (stats: {
     winRate: number;           // 胜率
     activePositions: number;   // 活跃仓位数
     pendingProfit: number;     // 待结算预期利润
+    // 对冲统计（可选）
+    hedgeEvents?: number;      // 触发对冲的事件数
+    hedgeCompleted?: number;   // 成功保本的事件数
+    hedgeCost?: number;        // 对冲总成本
 }): Promise<void> => {
     const profitEmoji = stats.totalProfit >= 0 ? '📈' : '📉';
     const pendingEmoji = stats.pendingProfit >= 0 ? '✅' : '❌';
@@ -646,6 +650,20 @@ export const notifyRunningStats = async (stats: {
     const hours = Math.floor(stats.runtime / 60);
     const mins = stats.runtime % 60;
     const runtimeStr = hours > 0 ? `${hours}小时${mins}分钟` : `${mins}分钟`;
+    
+    // 对冲统计部分
+    let hedgeSection = '';
+    if (stats.hedgeEvents !== undefined && stats.hedgeEvents > 0) {
+        const hedgeSuccessRate = stats.hedgeCompleted !== undefined && stats.hedgeEvents > 0
+            ? ((stats.hedgeCompleted / stats.hedgeEvents) * 100).toFixed(0)
+            : '0';
+        hedgeSection = `
+
+🛡️ <b>对冲保本:</b>
+   • 触发: ${stats.hedgeEvents} 次
+   • 成功保本: ${stats.hedgeCompleted || 0} 次 (${hedgeSuccessRate}%)
+   • 对冲成本: $${(stats.hedgeCost || 0).toFixed(2)}`;
+    }
     
     const message = `
 📊 <b>运行统计</b> (${new Date().toLocaleTimeString('zh-CN')})
@@ -659,7 +677,7 @@ export const notifyRunningStats = async (stats: {
 
 📋 <b>待结算:</b>
    • 活跃仓位: ${stats.activePositions} 个
-   • ${pendingEmoji} 预期利润: ${stats.pendingProfit >= 0 ? '+' : ''}$${stats.pendingProfit.toFixed(2)}
+   • ${pendingEmoji} 预期利润: ${stats.pendingProfit >= 0 ? '+' : ''}$${stats.pendingProfit.toFixed(2)}${hedgeSection}
 
 ${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : '🔴 <i>实盘模式</i>'}
 `.trim();
