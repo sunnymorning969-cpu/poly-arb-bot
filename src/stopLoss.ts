@@ -526,46 +526,17 @@ export const clearTriggeredStopLoss = (timeGroup?: TimeGroup): void => {
 /**
  * 检查是否应该暂停某个时间组的交易
  * 
- * 条件：
- * 1. 止损功能开启
- * 2. 已进入风险监控窗口
- * 3. 风险比例已经很高（≥50%）或已触发止损
- * 
- * 这可以防止在止损条件即将满足时还在开新仓
+ * 只在真正触发止损时才暂停，不做预警暂停
+ * 触发条件由用户配置：比例 >= STOP_LOSS_RISK_RATIO 且 次数 >= STOP_LOSS_MIN_TRIGGER_COUNT
  */
 export const shouldPauseTrading = (timeGroup: TimeGroup): { pause: boolean; reason: string } => {
     if (!CONFIG.STOP_LOSS_ENABLED) {
         return { pause: false, reason: '' };
     }
     
-    // 如果已经触发止损，必须暂停
+    // 只在已触发止损时才暂停
     if (triggeredStopLoss.has(timeGroup)) {
-        return { pause: true, reason: '止损已触发' };
-    }
-    
-    const tracker = priceTrackers.get(timeGroup);
-    if (!tracker) {
-        return { pause: false, reason: '' };
-    }
-    
-    // 还没进入风险窗口，不暂停
-    if (tracker.riskWindowStartTime === 0) {
-        return { pause: false, reason: '' };
-    }
-    
-    // 已进入风险窗口，检查风险比例
-    const riskRatio = tracker.riskCheckCount > 0 
-        ? tracker.riskTriggerCount / tracker.riskCheckCount 
-        : 0;
-    
-    // 预警阈值：风险比例 ≥ 50% 时暂停新开仓
-    const PAUSE_THRESHOLD = 0.5;
-    
-    if (riskRatio >= PAUSE_THRESHOLD) {
-        return { 
-            pause: true, 
-            reason: `风险比例 ${(riskRatio * 100).toFixed(0)}% ≥ 50%，暂停开仓` 
-        };
+        return { pause: true, reason: '止损已触发，暂停开仓' };
     }
     
     return { pause: false, reason: '' };
