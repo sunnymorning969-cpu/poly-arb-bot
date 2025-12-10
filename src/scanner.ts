@@ -386,9 +386,11 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
                 marketTokenMap.set(market.condition_id, { market, upToken, downToken });
                 tokenIds.push(upToken.token_id, downToken.token_id);
                 
-                // 更新止损模块的 token 映射
+                // 更新止损模块的 token 映射（区分 BTC 和 ETH）
                 const timeGroup = getTimeGroup(market.slug);
-                updateTokenMap(timeGroup, upToken.token_id, downToken.token_id, market.end_date_iso);
+                const isBtc = market.slug.includes('btc') || market.slug.includes('bitcoin');
+                const asset = isBtc ? 'btc' : 'eth';
+                updateTokenMap(timeGroup, upToken.token_id, downToken.token_id, market.end_date_iso, asset);
             }
         }
         

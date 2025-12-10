@@ -76,19 +76,36 @@ const priceTrackers = new Map<TimeGroup, PriceTracker>();
 // 上次检查时间
 let lastCheckTime = 0;
 
-// Token 映射缓存（从 scanner 获取）
-let tokenMapCache: Map<TimeGroup, { upTokenId: string; downTokenId: string; endDate: string }> = new Map();
+// 单个市场的 Token 信息
+interface MarketTokens {
+    upTokenId: string;
+    downTokenId: string;
+    endDate: string;
+}
+
+// Token 映射缓存（从 scanner 获取）- 每个 timeGroup 存储 BTC 和 ETH 两个市场
+let tokenMapCache: Map<TimeGroup, {
+    btc?: MarketTokens;
+    eth?: MarketTokens;
+}> = new Map();
 
 /**
  * 更新 Token 映射（由 scanner 调用）
+ * @param asset 'btc' 或 'eth'
  */
 export const updateTokenMap = (
     timeGroup: TimeGroup,
     upTokenId: string,
     downTokenId: string,
-    endDate: string
+    endDate: string,
+    asset: 'btc' | 'eth'
 ): void => {
-    tokenMapCache.set(timeGroup, { upTokenId, downTokenId, endDate });
+    let entry = tokenMapCache.get(timeGroup);
+    if (!entry) {
+        entry = {};
+        tokenMapCache.set(timeGroup, entry);
+    }
+    entry[asset] = { upTokenId, downTokenId, endDate };
 };
 
 /**
@@ -122,25 +139,32 @@ export const checkStopLossSignals = (): StopLossState[] => {
     const MIN_TRIGGER_COUNT = CONFIG.STOP_LOSS_MIN_TRIGGER_COUNT; // 最小触发次数（默认30次）
     
     // 检查每个时间组
-    for (const [timeGroup, tokenInfo] of tokenMapCache) {
+    for (const [timeGroup, markets] of tokenMapCache) {
         // 跳过已触发的
         if (triggeredStopLoss.has(timeGroup)) {
             continue;
         }
         
-        const endTime = new Date(tokenInfo.endDate).getTime();
+        // 需要两个市场都有数据才能计算跨池子组合
+        if (!markets.btc || !markets.eth) {
+            continue;
+        }
+        
+        const endTime = new Date(markets.btc.endDate).getTime();
         const secondsToEnd = (endTime - now) / 1000;
         
         // 获取当前价格（bid 价格，即可卖出价格）
-        const upBook = orderBookManager.getOrderBook(tokenInfo.upTokenId);
-        const downBook = orderBookManager.getOrderBook(tokenInfo.downTokenId);
+        // 跨池子组合：BTC Up + ETH Down
+        const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+        const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
         
-        if (!upBook || !downBook) {
+        if (!btcUpBook || !ethDownBook) {
             continue;  // 没有价格数据
         }
         
-        const upBid = upBook.bestBid;
-        const downBid = downBook.bestBid;
+        // 跨池子组合价格（与套利策略一致）
+        const upBid = btcUpBook.bestBid;      // BTC Up Bid
+        const downBid = ethDownBook.bestBid;  // ETH Down Bid
         const combinedBid = upBid + downBid;
         
         // 获取或创建价格追踪器
@@ -367,8 +391,8 @@ export const executeStopLoss = async (
     }
     
     // 实盘模式：执行卖出
-    const tokenInfo = tokenMapCache.get(signal.timeGroup);
-    if (!tokenInfo) {
+    const markets = tokenMapCache.get(signal.timeGroup);
+    if (!markets || !markets.btc || !markets.eth) {
         Logger.error(`[止损] 找不到 ${signal.timeGroup} 的 token 信息`);
         return { success: false, upSold: 0, downSold: 0, totalReceived: 0, totalCost: 0, savedLoss: 0 };
     }
@@ -376,19 +400,19 @@ export const executeStopLoss = async (
     let upReceived = 0;
     let downReceived = 0;
     
-    // 并行卖出
+    // 并行卖出（跨池子：BTC Up + ETH Down）
     const promises: Promise<void>[] = [];
     
     if (totalUpShares > 0) {
         promises.push(
-            sellFunction(tokenInfo.upTokenId, totalUpShares, signal.upBid, `${signal.timeGroup} Up`)
+            sellFunction(markets.btc.upTokenId, totalUpShares, signal.upBid, `${signal.timeGroup} BTC Up`)
                 .then(r => { if (r.success) upReceived = r.received; })
         );
     }
     
     if (totalDownShares > 0) {
         promises.push(
-            sellFunction(tokenInfo.downTokenId, totalDownShares, signal.downBid, `${signal.timeGroup} Down`)
+            sellFunction(markets.eth.downTokenId, totalDownShares, signal.downBid, `${signal.timeGroup} ETH Down`)
                 .then(r => { if (r.success) downReceived = r.received; })
         );
     }
