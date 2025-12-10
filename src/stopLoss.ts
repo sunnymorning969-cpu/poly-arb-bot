@@ -154,18 +154,26 @@ export const checkStopLossSignals = (): StopLossState[] => {
         const secondsToEnd = (endTime - now) / 1000;
         
         // 获取当前价格（bid 价格，即可卖出价格）
-        // 跨池子组合：BTC Up + ETH Down
+        // 两种跨池子组合：
+        // 1. BTC Up + ETH Down
+        // 2. ETH Up + BTC Down
         const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+        const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
+        const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
         const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
         
-        if (!btcUpBook || !ethDownBook) {
+        if (!btcUpBook || !btcDownBook || !ethUpBook || !ethDownBook) {
             continue;  // 没有价格数据
         }
         
-        // 跨池子组合价格（与套利策略一致）
-        const upBid = btcUpBook.bestBid;      // BTC Up Bid
-        const downBid = ethDownBook.bestBid;  // ETH Down Bid
-        const combinedBid = upBid + downBid;
+        // 计算两种跨池子组合的价格
+        const combo1Bid = btcUpBook.bestBid + ethDownBook.bestBid;  // BTC↑ETH↓
+        const combo2Bid = ethUpBook.bestBid + btcDownBook.bestBid;  // ETH↑BTC↓
+        
+        // 使用两者中较低的价格作为风险指标（更保守）
+        const combinedBid = Math.min(combo1Bid, combo2Bid);
+        const upBid = combo1Bid <= combo2Bid ? btcUpBook.bestBid : ethUpBook.bestBid;
+        const downBid = combo1Bid <= combo2Bid ? ethDownBook.bestBid : btcDownBook.bestBid;
         
         // 获取或创建价格追踪器
         let tracker = priceTrackers.get(timeGroup);
