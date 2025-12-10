@@ -84,6 +84,14 @@ const saveConfig = (config: Record<string, string>): void => {
         `MAX_ARBITRAGE_PERCENT=${config.MAX_ARBITRAGE_PERCENT || '10'}`,
         `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '90'}`,
         '',
+        '# ========== 止损配置 ==========',
+        `STOP_LOSS_ENABLED=${config.STOP_LOSS_ENABLED || 'true'}`,
+        `STOP_LOSS_WINDOW_SEC=${config.STOP_LOSS_WINDOW_SEC || '180'}`,
+        `STOP_LOSS_COST_THRESHOLD=${config.STOP_LOSS_COST_THRESHOLD || '0.6'}`,
+        `STOP_LOSS_CHECK_INTERVAL_MS=${config.STOP_LOSS_CHECK_INTERVAL_MS || '1000'}`,
+        `STOP_LOSS_RISK_RATIO=${config.STOP_LOSS_RISK_RATIO || '0.7'}`,
+        `STOP_LOSS_MIN_TRIGGER_COUNT=${config.STOP_LOSS_MIN_TRIGGER_COUNT || '30'}`,
+        '',
     ];
     
     fs.writeFileSync(ENV_FILE, lines.join('\n'), 'utf-8');
@@ -112,38 +120,82 @@ const main = async () => {
     
     const config: Record<string, string> = { ...existingConfig };
     
-    // ===== 必填：私钥和钱包地址 =====
-    log.title('📝 必填配置');
-    
-    log.warning('私钥用于签名交易，请确保安全保管！');
-    const currentPK = config.PRIVATE_KEY ? '(已有，回车保留)' : '';
-    let pk = await question(`钱包私钥 ${currentPK}: `);
-    if (pk) {
-        pk = pk.replace(/^0x/, '');
-        if (pk.length === 64) {
-            config.PRIVATE_KEY = pk;
-            log.success('私钥已设置');
-        } else {
-            log.error('私钥格式不正确，应为 64 位十六进制');
-        }
-    }
-    
-    const currentWallet = config.PROXY_WALLET ? `(当前: ${config.PROXY_WALLET.slice(0, 10)}...)` : '';
-    const wallet = await question(`钱包地址 ${currentWallet}: `);
-    if (wallet) {
-        if (wallet.startsWith('0x') && wallet.length === 42) {
-            config.PROXY_WALLET = wallet;
-            log.success('钱包地址已设置');
-        } else {
-            log.error('钱包地址格式不正确');
-        }
-    }
-    
-    // ===== 模拟模式 =====
+    // ===== 先选择模式（决定是否需要填写私钥）=====
     log.title('🔒 模式选择');
-    log.info('模拟模式下不会真实下单，建议先测试');
+    log.info('模拟模式：不会真实下单，不需要私钥，用于测试和观察市场');
+    log.info('实盘模式：真实下单，需要私钥和钱包地址');
     const simMode = await question('启用模拟模式？(y/n，默认 y): ');
     config.SIMULATION_MODE = simMode.toLowerCase() === 'n' ? 'false' : 'true';
+    
+    const isSimulation = config.SIMULATION_MODE === 'true';
+    
+    // ===== 私钥和钱包地址（实盘模式必填）=====
+    if (isSimulation) {
+        log.title('📝 钱包配置（可选）');
+        log.info('模拟模式下不需要填写，直接回车跳过');
+        
+        const currentPK = config.PRIVATE_KEY ? '(已有，回车保留)' : '(可跳过)';
+        let pk = await question(`钱包私钥 ${currentPK}: `);
+        if (pk) {
+            pk = pk.replace(/^0x/, '');
+            if (pk.length === 64) {
+                config.PRIVATE_KEY = pk;
+                log.success('私钥已设置');
+            } else {
+                log.error('私钥格式不正确，已跳过');
+            }
+        }
+        
+        const currentWallet = config.PROXY_WALLET ? `(当前: ${config.PROXY_WALLET.slice(0, 10)}...)` : '(可跳过)';
+        const wallet = await question(`钱包地址 ${currentWallet}: `);
+        if (wallet) {
+            if (wallet.startsWith('0x') && wallet.length === 42) {
+                config.PROXY_WALLET = wallet;
+                log.success('钱包地址已设置');
+            } else {
+                log.error('钱包地址格式不正确，已跳过');
+            }
+        }
+    } else {
+        log.title('📝 钱包配置（必填）');
+        log.warning('实盘模式需要填写私钥和钱包地址！');
+        log.warning('私钥用于签名交易，请确保安全保管！');
+        
+        // 私钥必填
+        while (!config.PRIVATE_KEY || config.PRIVATE_KEY.length !== 64) {
+            const currentPK = config.PRIVATE_KEY ? '(已有，回车保留)' : '';
+            let pk = await question(`钱包私钥 ${currentPK}: `);
+            if (!pk && config.PRIVATE_KEY) break;  // 已有则跳过
+            if (pk) {
+                pk = pk.replace(/^0x/, '');
+                if (pk.length === 64) {
+                    config.PRIVATE_KEY = pk;
+                    log.success('私钥已设置');
+                } else {
+                    log.error('私钥格式不正确，应为 64 位十六进制，请重新输入');
+                }
+            } else {
+                log.error('实盘模式必须填写私钥');
+            }
+        }
+        
+        // 钱包地址必填
+        while (!config.PROXY_WALLET || config.PROXY_WALLET.length !== 42) {
+            const currentWallet = config.PROXY_WALLET ? `(当前: ${config.PROXY_WALLET.slice(0, 10)}...)` : '';
+            const wallet = await question(`钱包地址 ${currentWallet}: `);
+            if (!wallet && config.PROXY_WALLET) break;  // 已有则跳过
+            if (wallet) {
+                if (wallet.startsWith('0x') && wallet.length === 42) {
+                    config.PROXY_WALLET = wallet;
+                    log.success('钱包地址已设置');
+                } else {
+                    log.error('钱包地址格式不正确，请重新输入');
+                }
+            } else {
+                log.error('实盘模式必须填写钱包地址');
+            }
+        }
+    }
     
     // ===== 清除历史数据 =====
     log.title('🧹 数据选项');
@@ -198,6 +250,54 @@ const main = async () => {
         config.DEPTH_USAGE_PERCENT = '90';
     }
     
+    // ===== 止损配置 =====
+    log.title('🚨 止损配置');
+    log.info('止损功能：在结束前检测到市场预期反向时自动平仓');
+    log.info('当组合价格突然变低（如<0.55），说明市场认为会双输');
+    
+    const stopLossEnabled = await question('启用止损功能？(y/n，默认 y): ');
+    config.STOP_LOSS_ENABLED = stopLossEnabled.toLowerCase() === 'n' ? 'false' : 'true';
+    
+    if (config.STOP_LOSS_ENABLED !== 'false') {
+        const currentWindow = config.STOP_LOSS_WINDOW_SEC || '180';
+        log.info(`监控窗口：结束前多少秒开始统计风险（默认180秒=倒数第3分钟）`);
+        const windowSec = await question(`监控窗口 秒 (当前: ${currentWindow}): `);
+        if (windowSec && !isNaN(parseInt(windowSec))) {
+            config.STOP_LOSS_WINDOW_SEC = windowSec;
+        } else if (!config.STOP_LOSS_WINDOW_SEC) {
+            config.STOP_LOSS_WINDOW_SEC = '180';
+        }
+        
+        const currentCostThreshold = config.STOP_LOSS_COST_THRESHOLD || '0.6';
+        log.info(`组合阈值：Up+Down Bid价格低于此值计入风险统计`);
+        const costThreshold = await question(`组合阈值 $ (当前: ${currentCostThreshold}): `);
+        if (costThreshold && !isNaN(parseFloat(costThreshold))) {
+            config.STOP_LOSS_COST_THRESHOLD = costThreshold;
+        } else if (!config.STOP_LOSS_COST_THRESHOLD) {
+            config.STOP_LOSS_COST_THRESHOLD = '0.6';
+        }
+        
+        const currentRiskRatio = config.STOP_LOSS_RISK_RATIO || '0.7';
+        log.info(`风险比例：低于阈值的次数占总检查次数的比例，超过此值触发止损`);
+        log.info(`例如 0.7 = 70%`);
+        const riskRatio = await question(`风险比例 (当前: ${currentRiskRatio}): `);
+        if (riskRatio && !isNaN(parseFloat(riskRatio))) {
+            config.STOP_LOSS_RISK_RATIO = riskRatio;
+        } else if (!config.STOP_LOSS_RISK_RATIO) {
+            config.STOP_LOSS_RISK_RATIO = '0.7';
+        }
+        
+        const currentMinCount = config.STOP_LOSS_MIN_TRIGGER_COUNT || '30';
+        log.info(`最小触发次数：风险次数的绝对值必须超过此值才触发止损`);
+        log.info(`避免样本太小误判`);
+        const minCount = await question(`最小触发次数 (当前: ${currentMinCount}): `);
+        if (minCount && !isNaN(parseInt(minCount))) {
+            config.STOP_LOSS_MIN_TRIGGER_COUNT = minCount;
+        } else if (!config.STOP_LOSS_MIN_TRIGGER_COUNT) {
+            config.STOP_LOSS_MIN_TRIGGER_COUNT = '30';
+        }
+    }
+    
     // ===== 保存 =====
     saveConfig(config);
     
@@ -206,8 +306,8 @@ const main = async () => {
     console.log('║                    ✅ 配置完成                            ║');
     console.log('╚═══════════════════════════════════════════════════════════╝');
     console.log('');
-    console.log(`  钱包: ${config.PROXY_WALLET || '未设置'}`);
-    console.log(`  模式: ${config.SIMULATION_MODE === 'true' ? '🔵 模拟' : '🔴 真实交易'}`);
+    console.log(`  模式: ${config.SIMULATION_MODE === 'true' ? '🔵 模拟（无需私钥）' : '🔴 真实交易'}`);
+    console.log(`  钱包: ${config.PROXY_WALLET ? config.PROXY_WALLET.slice(0, 10) + '...' : '未设置'}`);
     console.log(`  启动清数据: ${config.CLEAR_DATA_ON_START === 'true' ? '✅ 是' : '❌ 否'}`);
     console.log(`  15分钟场: ${config.ENABLE_15MIN === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
@@ -215,6 +315,16 @@ const main = async () => {
     console.log(`  最小利润: $${config.MIN_PROFIT_USD}`);
     console.log(`  最大敞口: ${config.MAX_ARBITRAGE_PERCENT}%`);
     console.log(`  深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
+    console.log('');
+    console.log('  🚨 止损配置:');
+    console.log(`  止损功能: ${config.STOP_LOSS_ENABLED === 'false' ? '❌ 关闭' : '✅ 开启'}`);
+    if (config.STOP_LOSS_ENABLED !== 'false') {
+        console.log(`  监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
+        console.log(`  组合阈值: $${config.STOP_LOSS_COST_THRESHOLD || '0.6'}`);
+        const ratio = parseFloat(config.STOP_LOSS_RISK_RATIO || '0.7') * 100;
+        console.log(`  风险比例: ≥${ratio.toFixed(0)}%`);
+        console.log(`  最小次数: ≥${config.STOP_LOSS_MIN_TRIGGER_COUNT || '30'} 次`);
+    }
     console.log('');
     log.success('启动命令: npm run dev');
     console.log('');

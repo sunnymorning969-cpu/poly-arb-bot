@@ -442,6 +442,10 @@ export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | nu
             const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
             if (!outcomeNames.includes('up') || !outcomeNames.includes('down')) continue;
             
+            // 调试日志：显示市场信息
+            Logger.info(`🔍 [调试] 市场: ${market.slug || market.question || 'unknown'}`);
+            Logger.info(`🔍 [调试] outcomes: ${JSON.stringify(outcomes)}`);
+            
             // 检查市场是否已结算
             // Polymarket 通常用 outcomePrices 来表示结果：获胜方价格 = 1，失败方价格 = 0
             let outcomePrices = market.outcomePrices;
@@ -449,12 +453,16 @@ export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | nu
                 try { outcomePrices = JSON.parse(outcomePrices); } catch { continue; }
             }
             
+            Logger.info(`🔍 [调试] outcomePrices: ${JSON.stringify(outcomePrices)}`);
+            
             if (outcomePrices && Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
                 const upIndex = outcomeNames.indexOf('up');
                 const downIndex = outcomeNames.indexOf('down');
                 
                 const upPrice = parseFloat(outcomePrices[upIndex]) || 0;
                 const downPrice = parseFloat(outcomePrices[downIndex]) || 0;
+                
+                Logger.info(`🔍 [调试] upIndex=${upIndex}, downIndex=${downIndex}, upPrice=${upPrice}, downPrice=${downPrice}`);
                 
                 // 如果价格是 1 或 0，说明已结算
                 if (upPrice >= 0.99) {
@@ -469,6 +477,7 @@ export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | nu
             // 也检查 winningOutcome 字段（如果有）
             if (market.winningOutcome) {
                 const winner = market.winningOutcome.toLowerCase();
+                Logger.info(`🔍 [调试] winningOutcome: ${market.winningOutcome}`);
                 if (winner === 'up' || winner === 'down') {
                     Logger.info(`📊 ${slug} 真实结果: ${winner.toUpperCase()} 获胜 (winningOutcome)`);
                     return winner as 'up' | 'down';

@@ -667,6 +667,50 @@ ${CONFIG.SIMULATION_MODE ? '⚠️ <i>模拟模式</i>' : '🔴 <i>实盘模式<
     await sendTelegramMessage(message);
 };
 
+/**
+ * 发送止损通知（高优先级）
+ */
+export const notifyStopLoss = async (data: {
+    timeGroup: string;
+    reason: string;
+    upShares: number;
+    downShares: number;
+    upBid: number;
+    downBid: number;
+    totalReceived: number;
+    totalCost: number;
+    savedLoss: number;
+    isSimulation: boolean;
+}): Promise<void> => {
+    const actualLoss = data.totalCost - data.totalReceived;
+    const worstCaseLoss = data.totalCost;  // 如果双输，亏损全部成本
+    const savedAmount = worstCaseLoss - actualLoss;
+    
+    const message = `
+🚨 <b>止损平仓通知</b>
+
+⏱️ <b>时间组:</b> ${data.timeGroup}
+⚠️ <b>触发原因:</b> ${data.reason}
+
+📊 <b>平仓详情:</b>
+   • 卖出 Up: ${data.upShares.toFixed(0)} shares @ $${data.upBid.toFixed(3)}
+   • 卖出 Down: ${data.downShares.toFixed(0)} shares @ $${data.downBid.toFixed(3)}
+
+💰 <b>收益情况:</b>
+   • 成本: $${data.totalCost.toFixed(2)}
+   • 回收: $${data.totalReceived.toFixed(2)}
+   • 本次亏损: $${actualLoss.toFixed(2)}
+
+💡 <b>止损效果:</b>
+   • 如果不止损（双输）亏损: $${worstCaseLoss.toFixed(2)}
+   • 止损减少亏损: <b>$${savedAmount.toFixed(2)}</b>
+
+${data.isSimulation ? '⚠️ <i>模拟模式</i>' : '🔴 <i>实盘模式</i>'}
+`.trim();
+
+    await sendTelegramMessage(message, true);  // 高优先级
+};
+
 export default {
     sendTelegramMessage,
     notifyArbitrageFound,
@@ -681,6 +725,7 @@ export default {
     notifySingleSettlement,
     resetSettlementCounters,
     notifyRunningStats,
+    notifyStopLoss,
 };
 
 

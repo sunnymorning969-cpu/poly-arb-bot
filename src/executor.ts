@@ -136,6 +136,12 @@ const approveToken = async (tokenAddress: string, tokenName: string, spender: st
  * 检查并执行所有必要的 USDC 授权
  */
 export const ensureApprovals = async (): Promise<boolean> => {
+    // 模拟模式下，如果没有私钥，跳过授权检查
+    if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+        Logger.info('🔵 模拟模式：跳过 USDC 授权检查');
+        return true;
+    }
+    
     Logger.info('🔐 检查 USDC 授权状态...');
     
     // 最小授权阈值（1000 USDC = 1000 * 1e6）
@@ -211,6 +217,11 @@ export const ensureApprovals = async (): Promise<boolean> => {
  * 获取 USDC.e 余额（Bridged USDC - Polymarket 主要使用这个）
  */
 export const getUSDCBalance = async (): Promise<number> => {
+    // 模拟模式下，如果没有私钥，返回模拟余额
+    if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+        return 10000;  // 模拟 10000 USDC
+    }
+    
     try {
         const { provider, wallet } = getProviderAndWallet();
         const ownerAddress = CONFIG.PROXY_WALLET || wallet.address;
@@ -230,6 +241,14 @@ export const getUSDCBalance = async (): Promise<number> => {
  */
 export const initClient = async (): Promise<ClobClient> => {
     if (clobClient) return clobClient;
+    
+    // 模拟模式下，如果没有私钥，跳过真实客户端初始化
+    if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+        Logger.info('🔵 模拟模式：跳过交易客户端初始化');
+        // 返回一个空的 mock 客户端
+        clobClient = {} as ClobClient;
+        return clobClient;
+    }
     
     Logger.info('初始化交易客户端...');
     
@@ -287,6 +306,11 @@ const BALANCE_CACHE_MS = 30000;  // 30 秒缓存
  * 获取账户余额（带缓存）
  */
 export const getBalance = async (): Promise<number> => {
+    // 模拟模式下，如果没有私钥，返回模拟余额
+    if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+        return 10000;  // 模拟 10000 USDC
+    }
+    
     const now = Date.now();
     
     // 使用缓存
@@ -619,12 +643,60 @@ export const executeArbitrage = async (
     };
 };
 
+/**
+ * 执行卖出（用于止损）
+ */
+export const executeSell = async (
+    tokenId: string,
+    shares: number,
+    bidPrice: number,
+    label: string
+): Promise<{ success: boolean; received: number }> => {
+    // 模拟模式
+    if (CONFIG.SIMULATION_MODE) {
+        const received = shares * bidPrice;
+        Logger.success(`🔵 [模拟卖出] ${label}: ${shares.toFixed(2)} shares @ $${bidPrice.toFixed(3)} = $${received.toFixed(2)}`);
+        return { success: true, received };
+    }
+    
+    try {
+        const client = await initClient();
+        
+        // 稍微低于 bid 价格确保成交
+        const sellPrice = Math.max(0.01, bidPrice * 0.995);
+        const amountUSD = shares * sellPrice;
+        
+        const orderArgs = {
+            side: Side.SELL,
+            tokenID: tokenId,
+            amount: amountUSD,
+            price: sellPrice,
+        };
+        
+        const signedOrder = await client.createMarketOrder(orderArgs);
+        const resp = await client.postOrder(signedOrder, OrderType.FOK);
+        
+        if (resp.success) {
+            const received = shares * sellPrice;
+            Logger.success(`✅ [卖出] ${label}: ${shares.toFixed(2)} shares @ $${sellPrice.toFixed(3)} = $${received.toFixed(2)}`);
+            return { success: true, received };
+        }
+        
+        Logger.warning(`❌ [卖出失败] ${label}: ${resp.errorMsg || '未知错误'}`);
+        return { success: false, received: 0 };
+    } catch (error: any) {
+        Logger.error(`❌ [卖出错误] ${label}: ${error.message || error}`);
+        return { success: false, received: 0 };
+    }
+};
+
 export default {
     initClient,
     getBalance,
     getUSDCBalance,
     ensureApprovals,
     executeArbitrage,
+    executeSell,
     isOnCooldown,
 };
 

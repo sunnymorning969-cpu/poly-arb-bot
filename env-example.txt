@@ -1,11 +1,49 @@
 # Polymarket 套利机器人配置
 # 运行 npm run setup 自动生成，或手动复制此文件为 .env
 
-# ========== 必填配置 ==========
-PRIVATE_KEY=你的私钥
-PROXY_WALLET=你的钱包地址
+# ========== 模式 ==========
+# 模拟模式（true=不实际下单，不需要私钥）
+SIMULATION_MODE=true
+CLEAR_DATA_ON_START=false
+
+# ========== 钱包配置（模拟模式可选，实盘模式必填）==========
+# 模拟模式下可以留空或填写任意值
+PRIVATE_KEY=
+PROXY_WALLET=
+
+# ========== 市场开关（0=关闭，1=开启）==========
+ENABLE_15MIN=1
+ENABLE_1HR=1
+
+# ========== 交易参数 ==========
+MAX_ORDER_SIZE_USD=14
+MIN_PROFIT_USD=0.01
+MAX_ARBITRAGE_PERCENT=10
+DEPTH_USAGE_PERCENT=90
+
+# ========== 止损配置 ==========
+# 止损功能开关（true/false）
+STOP_LOSS_ENABLED=true
+
+# 结束前多少秒开始监控止损（默认180秒=3分钟，即倒数第三分钟开始统计）
+STOP_LOSS_WINDOW_SEC=180
+
+# 组合成本阈值（Up+Down Bid价格低于此值计入风险统计）
+# 当组合价格很低说明市场预期会反向（BTC跌ETH涨），是最坏情况
+STOP_LOSS_COST_THRESHOLD=0.6
+
+# 止损检查间隔（毫秒）- 默认1秒检查一次
+STOP_LOSS_CHECK_INTERVAL_MS=1000
+
+# 风险比例阈值（低于阈值的次数占总检查次数的比例）
+# 超过此比例触发止损，默认0.7 = 70%
+STOP_LOSS_RISK_RATIO=0.7
+
+# 最小触发次数（风险次数的绝对值必须超过此值才触发止损）
+# 避免样本太小误判，默认30次
+# 以1秒检查一次计算，30次 = 至少30秒的数据
+STOP_LOSS_MIN_TRIGGER_COUNT=30
 
 # ========== 可选配置 ==========
 # RPC_URL=https://polygon-rpc.com
-# SIMULATION_MODE=true
 

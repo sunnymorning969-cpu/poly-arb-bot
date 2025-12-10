@@ -15,6 +15,8 @@ import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary } from './stopLoss';
+import { executeSell } from './executor';
 
 // 统计数据
 interface Stats {
@@ -58,6 +60,7 @@ const printBanner = () => {
  */
 const printConfig = () => {
     const storageStatus = getStorageStatus();
+    const stopLossStatus = getStopLossStatus();
     
     Logger.info('📋 当前配置:');
     Logger.info(`   钱包: ${CONFIG.PROXY_WALLET.slice(0, 10)}...${CONFIG.PROXY_WALLET.slice(-8)}`);
@@ -73,6 +76,15 @@ const printConfig = () => {
     Logger.info(`   扫描间隔: ${CONFIG.SCAN_INTERVAL_MS}ms`);
     Logger.info(`   交易冷却: ${CONFIG.TRADE_COOLDOWN_MS}ms`);
     Logger.info(`   并行上限: ${CONFIG.MAX_PARALLEL_TRADES}`);
+    Logger.divider();
+    Logger.info('🚨 止损配置:');
+    Logger.info(`   止损开关: ${stopLossStatus.enabled ? '✅ 开启' : '❌ 关闭'}`);
+    if (stopLossStatus.enabled) {
+        Logger.info(`   监控窗口: 结束前 ${stopLossStatus.windowSec} 秒`);
+        Logger.info(`   组合阈值: $${stopLossStatus.costThreshold}`);
+        Logger.info(`   风险比例: ≥${(stopLossStatus.riskRatio * 100).toFixed(0)}%`);
+        Logger.info(`   最小次数: ≥${stopLossStatus.minTriggerCount} 次`);
+    }
     Logger.divider();
     Logger.info('💾 数据存储:');
     Logger.info(`   位置: ${storageStatus.positionsCount} 仓位 | ${storageStatus.historyCount} 历史`);
@@ -351,6 +363,15 @@ const mainLoop = async () => {
                 
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
+            }
+            
+            // 止损检查（高频，由止损模块内部控制频率）
+            const stopLossSignals = checkStopLossSignals();
+            if (stopLossSignals.length > 0) {
+                for (const signal of stopLossSignals) {
+                    Logger.warning(`🚨 触发止损: ${signal.timeGroup} - ${signal.reason}`);
+                    await executeStopLoss(executeSell, signal);
+                }
             }
             
             // 自动赎回检查（内部控制5秒间隔）

@@ -5,20 +5,27 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+// 判断是否模拟模式（在验证前先读取）
+const isSimulation = process.env.SIMULATION_MODE === 'true';
+
 // 验证必要的环境变量
-const requiredEnvVars = ['PRIVATE_KEY', 'PROXY_WALLET'];
-for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
-        console.error(`❌ 缺少必要的环境变量: ${envVar}`);
-        console.error('请复制 env-example.txt 为 .env 并填入配置');
-        process.exit(1);
+// 模拟模式下不需要私钥和钱包地址
+if (!isSimulation) {
+    const requiredEnvVars = ['PRIVATE_KEY', 'PROXY_WALLET'];
+    for (const envVar of requiredEnvVars) {
+        if (!process.env[envVar]) {
+            console.error(`❌ 缺少必要的环境变量: ${envVar}`);
+            console.error('请复制 env-example.txt 为 .env 并填入配置');
+            console.error('提示：如果只想测试，可以设置 SIMULATION_MODE=true 跳过此检查');
+            process.exit(1);
+        }
     }
 }
 
 export const CONFIG = {
-    // ========== 必填配置 ==========
-    PRIVATE_KEY: process.env.PRIVATE_KEY as string,
-    PROXY_WALLET: process.env.PROXY_WALLET as string,
+    // ========== 必填配置（模拟模式可选）==========
+    PRIVATE_KEY: process.env.PRIVATE_KEY || '',
+    PROXY_WALLET: process.env.PROXY_WALLET || '',
     
     // ========== API 配置 ==========
     CLOB_HTTP_URL: process.env.CLOB_HTTP_URL || 'https://clob.polymarket.com',
@@ -72,6 +79,27 @@ export const CONFIG = {
     
     // 启动时清除历史数据（true=从零开始）
     CLEAR_DATA_ON_START: process.env.CLEAR_DATA_ON_START === 'true',
+    
+    // ========== 止损配置 ==========
+    // 止损功能开关
+    STOP_LOSS_ENABLED: process.env.STOP_LOSS_ENABLED !== 'false',
+    
+    // 结束前多少秒开始监控止损（默认180秒=3分钟，即倒数第三分钟开始）
+    STOP_LOSS_WINDOW_SEC: parseInt(process.env.STOP_LOSS_WINDOW_SEC || '180'),
+    
+    // 组合成本阈值（低于此值计入风险统计）
+    STOP_LOSS_COST_THRESHOLD: parseFloat(process.env.STOP_LOSS_COST_THRESHOLD || '0.6'),
+    
+    // 止损检查间隔（毫秒）
+    STOP_LOSS_CHECK_INTERVAL_MS: parseInt(process.env.STOP_LOSS_CHECK_INTERVAL_MS || '1000'),
+    
+    // 风险比例阈值（低于阈值的次数占总检查次数的比例，超过此值触发止损）
+    // 默认0.7 = 70%
+    STOP_LOSS_RISK_RATIO: parseFloat(process.env.STOP_LOSS_RISK_RATIO || '0.7'),
+    
+    // 最小触发次数（风险次数的绝对值必须超过此值才触发止损）
+    // 默认30次，避免样本太小误判
+    STOP_LOSS_MIN_TRIGGER_COUNT: parseInt(process.env.STOP_LOSS_MIN_TRIGGER_COUNT || '30'),
     
     // ========== 链配置 ==========
     CHAIN_ID: 137,

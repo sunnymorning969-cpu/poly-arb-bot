@@ -12,6 +12,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
+import { updateTokenMap, clearTriggeredStopLoss, printEventSummary } from './stopLoss';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -136,7 +137,21 @@ export const checkEventSwitch = async (): Promise<boolean> => {
         currentSlugs.some((slug, i) => slug !== lastSlugs[i]);
     
     if (slugsChanged) {
+        // 在清除前，打印上一个事件的统计摘要
+        const oldTimeGroups = new Set<TimeGroup>();
+        for (const slug of lastSlugs) {
+            const timeGroup = getTimeGroup(slug);
+            if (timeGroup) {
+                oldTimeGroups.add(timeGroup);
+            }
+        }
+        for (const timeGroup of oldTimeGroups) {
+            printEventSummary(timeGroup);
+        }
+        
         Logger.info(`🔄 检测到事件切换，更新市场订阅...`);
+        // 清除止损记录（新事件开始）
+        clearTriggeredStopLoss();
         await fetchCryptoMarkets();
         return true;
     }
@@ -370,6 +385,10 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
             if (upToken && downToken) {
                 marketTokenMap.set(market.condition_id, { market, upToken, downToken });
                 tokenIds.push(upToken.token_id, downToken.token_id);
+                
+                // 更新止损模块的 token 映射
+                const timeGroup = getTimeGroup(market.slug);
+                updateTokenMap(timeGroup, upToken.token_id, downToken.token_id, market.end_date_iso);
             }
         }
         
