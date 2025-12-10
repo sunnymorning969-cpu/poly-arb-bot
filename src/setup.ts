@@ -81,7 +81,9 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
-        `MAX_ARBITRAGE_PERCENT=${config.MAX_ARBITRAGE_PERCENT || '10'}`,
+        `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
+        `MAX_ARBITRAGE_PERCENT_FINAL=${config.MAX_ARBITRAGE_PERCENT_FINAL || '15'}`,
+        `MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=${config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13'}`,
         `DEPTH_USAGE_PERCENT=${config.DEPTH_USAGE_PERCENT || '90'}`,
         '',
         '# ========== 止损配置 ==========',
@@ -232,14 +234,34 @@ const main = async () => {
         config.MIN_PROFIT_USD = '0.01';
     }
     
-    const currentMaxArb = config.MAX_ARBITRAGE_PERCENT || '10';
-    log.info('最大套利敞口：超过此值说明市场分歧大，风险高');
-    log.info('例如 10% = 合计成本 < $0.90 时不交易');
-    const maxArb = await question(`最大套利敞口 % (当前: ${currentMaxArb}): `);
-    if (maxArb && !isNaN(parseFloat(maxArb))) {
-        config.MAX_ARBITRAGE_PERCENT = maxArb;
-    } else if (!config.MAX_ARBITRAGE_PERCENT) {
-        config.MAX_ARBITRAGE_PERCENT = '10';
+    log.info('最大套利敞口（动态）：开盘波动大允许大敞口，后期逐渐收紧');
+    log.info('公式：敞口从初始值线性收紧到最终值');
+    
+    const currentInitial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';
+    log.info(`初始敞口：开盘时允许的最大敞口（例如 30% = 组合成本>$0.70可交易）`);
+    const initialArb = await question(`初始敞口 % (当前: ${currentInitial}): `);
+    if (initialArb && !isNaN(parseFloat(initialArb))) {
+        config.MAX_ARBITRAGE_PERCENT_INITIAL = initialArb;
+    } else if (!config.MAX_ARBITRAGE_PERCENT_INITIAL) {
+        config.MAX_ARBITRAGE_PERCENT_INITIAL = '30';
+    }
+    
+    const currentFinal = config.MAX_ARBITRAGE_PERCENT_FINAL || '15';
+    log.info(`最终敞口：后期收紧后的敞口限制（例如 15% = 组合成本>$0.85才可交易）`);
+    const finalArb = await question(`最终敞口 % (当前: ${currentFinal}): `);
+    if (finalArb && !isNaN(parseFloat(finalArb))) {
+        config.MAX_ARBITRAGE_PERCENT_FINAL = finalArb;
+    } else if (!config.MAX_ARBITRAGE_PERCENT_FINAL) {
+        config.MAX_ARBITRAGE_PERCENT_FINAL = '15';
+    }
+    
+    const currentTighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
+    log.info(`收紧时长：在多少分钟内完成从初始到最终的收紧`);
+    const tighten = await question(`收紧时长(分钟) (当前: ${currentTighten}): `);
+    if (tighten && !isNaN(parseInt(tighten))) {
+        config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = tighten;
+    } else if (!config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES) {
+        config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES = '13';
     }
     
     const currentDepth = config.DEPTH_USAGE_PERCENT || '90';
@@ -313,7 +335,10 @@ const main = async () => {
     console.log(`  1小时场: ${config.ENABLE_1HR === '0' ? '❌ 关闭' : '✅ 开启'}`);
     console.log(`  最大下单: $${config.MAX_ORDER_SIZE_USD}`);
     console.log(`  最小利润: $${config.MIN_PROFIT_USD}`);
-    console.log(`  最大敞口: ${config.MAX_ARBITRAGE_PERCENT}%`);
+    const initial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';
+    const final = config.MAX_ARBITRAGE_PERCENT_FINAL || '15';
+    const tighten = config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13';
+    console.log(`  敞口限制: ${initial}% → ${final}%（${tighten}分钟内收紧）`);
     console.log(`  深度使用: ${config.DEPTH_USAGE_PERCENT}%`);
     console.log('');
     console.log('  🚨 止损配置:');

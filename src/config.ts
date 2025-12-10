@@ -47,9 +47,17 @@ export const CONFIG = {
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     
-    // 最大套利利润率（高于此值说明市场分歧大，风险高，暂不交易）
-    // 例如：10 表示合计成本 < $0.90 时不交易
-    MAX_ARBITRAGE_PERCENT: parseFloat(process.env.MAX_ARBITRAGE_PERCENT || '10'),
+    // 最大套利敞口 - 动态计算（开盘宽松，逐渐收紧）
+    // 初始值（开盘第一分钟使用此值，允许较大敞口）
+    // 例如：30 表示组合成本 > $0.70 就可以交易
+    MAX_ARBITRAGE_PERCENT_INITIAL: parseFloat(process.env.MAX_ARBITRAGE_PERCENT_INITIAL || '30'),
+    
+    // 最终值（事件后期使用此值，敞口收紧）
+    // 例如：15 表示组合成本 > $0.85 才可以交易
+    MAX_ARBITRAGE_PERCENT_FINAL: parseFloat(process.env.MAX_ARBITRAGE_PERCENT_FINAL || '15'),
+    
+    // 收紧时长（分钟），在此时间内从初始值线性收紧到最终值
+    MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES: parseInt(process.env.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13'),
     
     // 最小套利利润金额（低于此值跳过，避免手续费亏损）
     MIN_PROFIT_USD: parseFloat(process.env.MIN_PROFIT_USD || '0.01'),

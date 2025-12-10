@@ -71,6 +71,7 @@ const printConfig = () => {
     Logger.info(`   最小利润额: $${CONFIG.MIN_PROFIT_USD}`);
     Logger.info(`   最大订单: $${CONFIG.MAX_ORDER_SIZE_USD}`);
     Logger.info(`   深度使用: ${CONFIG.DEPTH_USAGE_PERCENT}%`);
+    Logger.info(`   敞口限制: ${CONFIG.MAX_ARBITRAGE_PERCENT_INITIAL}% → ${CONFIG.MAX_ARBITRAGE_PERCENT_FINAL}%（${CONFIG.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES}分钟内收紧）`);
     Logger.divider();
     Logger.info('⏱️ 频率控制:');
     Logger.info(`   扫描间隔: ${CONFIG.SCAN_INTERVAL_MS}ms`);
@@ -113,6 +114,37 @@ const printStats = () => {
 };
 
 /**
+ * 计算动态敞口限制（开盘宽松，逐渐收紧）
+ * 
+ * 逻辑：
+ * - 开盘时敞口宽松（初始值大，如30%，允许组合成本>$0.70）
+ * - 随时间推移逐渐收紧（最终值小，如15%，要求组合成本>$0.85）
+ * - 在指定时间内线性过渡
+ * 
+ * @param endDate 事件结束时间
+ * @param eventDurationMin 事件总时长（分钟），15分钟场=15，1小时场=60
+ */
+const getDynamicMaxArbitragePercent = (endDate: string, eventDurationMin: number = 15): number => {
+    const now = Date.now();
+    const endTime = new Date(endDate).getTime();
+    const startTime = endTime - eventDurationMin * 60 * 1000;
+    
+    // 计算事件已过去的分钟数
+    const elapsedMs = now - startTime;
+    const elapsedMinutes = Math.max(0, elapsedMs / 60000);  // 精确到小数
+    
+    // 计算收紧进度（0~1）
+    const tightenProgress = Math.min(elapsedMinutes / CONFIG.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES, 1);
+    
+    // 线性插值：从初始值收紧到最终值
+    const initial = CONFIG.MAX_ARBITRAGE_PERCENT_INITIAL;
+    const final = CONFIG.MAX_ARBITRAGE_PERCENT_FINAL;
+    const currentPercent = initial - (initial - final) * tightenProgress;
+    
+    return currentPercent;
+};
+
+/**
  * 选择套利机会（事件级策略）
  * 
  * 增强版：scanner 已经做了机会判断，这里做最终验证和冷却检查
@@ -146,8 +178,10 @@ const selectOpportunities = (
         }
         
         // 4. 套利敞口不能太大（市场分歧大时风险高）
-        // 例如：MAX_ARBITRAGE_PERCENT=10 时，合计成本 < $0.90 不交易
-        const minCombinedCost = 1 - (CONFIG.MAX_ARBITRAGE_PERCENT / 100);
+        // 动态计算：开盘时敞口限制较紧，随时间逐渐放宽
+        const eventDuration = opp.timeGroup === '15min' ? 15 : 60;
+        const currentMaxArbitragePercent = getDynamicMaxArbitragePercent(opp.endDate, eventDuration);
+        const minCombinedCost = 1 - (currentMaxArbitragePercent / 100);
         if (opp.tradingAction === 'buy_both' && opp.combinedCost < minCombinedCost) {
             // 显示时间场和市场组合信息
             const isBtcUp = opp.upMarketSlug?.includes('btc') || opp.upMarketSlug?.includes('bitcoin');
@@ -155,7 +189,7 @@ const selectOpportunities = (
             const upSource = isBtcUp ? 'BTC' : 'ETH';
             const downSource = isBtcDown ? 'BTC' : 'ETH';
             const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
-            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)}，跳过`);
+            Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: $${opp.combinedCost.toFixed(3)} < $${minCombinedCost.toFixed(2)} (当前限制${currentMaxArbitragePercent.toFixed(0)}%)，跳过`);
             continue;
         }
         
