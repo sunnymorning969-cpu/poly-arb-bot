@@ -559,8 +559,8 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         }
         // 策略 2: 有仓位时的平衡操作
         else if (groupAnalysis.hasPosition) {
-            // 2a: 当前组合成本仍有套利空间，可以加仓
-            if (isRealArbitrage && groupPrediction.newAvgCostPerPair < 0.995) {
+            // 2a: 当前组合成本仍有套利空间，可以加仓（也需要满足最小利润率）
+            if (isRealArbitrage && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT && groupPrediction.newAvgCostPerPair < 0.995) {
                 tradingAction = 'buy_both';
                 priority = (1.0 - groupPrediction.newAvgCostPerPair) * 100;
             }
