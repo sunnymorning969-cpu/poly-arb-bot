@@ -967,6 +967,10 @@ export const checkExtremeImbalance = (timeGroup: TimeGroup): ExtremeImbalanceSig
     // 4. 保留所有"会赢"的仓位，等待结算
     
     // 获取当前市场价格
+    if (!markets.btc || !markets.eth) {
+        return null;
+    }
+    
     const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
     const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
     const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
