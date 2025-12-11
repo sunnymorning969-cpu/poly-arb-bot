@@ -255,12 +255,14 @@ const selectOpportunities = (
             continue;
         }
         
-        // 5. 冷却检查（跨池子时检查两个市场）
-        if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
-            continue;
-        }
-        if (opp.isCrossPool && opp.downConditionId && isDuplicateOpportunity(opp.downConditionId, opp.upAskPrice, opp.downAskPrice)) {
-            continue;
+        // 5. 冷却检查（同池增持完全跳过冷却，以最快速度平衡仓位）
+        if (!opp.isSamePoolRebalance) {
+            if (isDuplicateOpportunity(opp.conditionId, opp.upAskPrice, opp.downAskPrice)) {
+                continue;
+            }
+            if (opp.isCrossPool && opp.downConditionId && isDuplicateOpportunity(opp.downConditionId, opp.upAskPrice, opp.downAskPrice)) {
+                continue;
+            }
         }
         
         selected.push(opp);

@@ -444,9 +444,11 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
-    // 检查冷却（同一市场冷却时间内不重复）
-    if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
-        return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+    // 检查冷却（同池增持完全跳过冷却，以最快速度平衡仓位）
+    if (!opportunity.isSamePoolRebalance) {
+        if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
     }
     
     // 获取交易动作
@@ -503,11 +505,11 @@ export const executeArbitrage = async (
         downShares = targetShares;
         
     } else if (action === 'buy_up_only') {
-        // 对冲/同池增持：使用 maxShares（已在 scanner 中计算好的目标数量），尽量多买
+        // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
         // 普通交易：90% 深度，有金额限制
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-            // 对冲/同池增持：使用预计算的 maxShares，不超过市场深度，尽量多买
-            upShares = Math.min(opportunity.maxShares, opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+            // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
+            upShares = Math.min(opportunity.maxShares, opportunity.upAskSize);
         } else {
             const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
@@ -524,11 +526,11 @@ export const executeArbitrage = async (
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
-        // 对冲/同池增持：使用 maxShares（已在 scanner 中计算好的目标数量），尽量多买
+        // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
         // 普通交易：90% 深度，有金额限制
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-            // 对冲/同池增持：使用预计算的 maxShares，不超过市场深度，尽量多买
-            downShares = Math.min(opportunity.maxShares, opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+            // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
+            downShares = Math.min(opportunity.maxShares, opportunity.downAskSize);
         } else {
             const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;
@@ -626,12 +628,15 @@ export const executeArbitrage = async (
         expectedProfit = 0;
     }
     
-    // 记录下单时间（防止重复，跨池子时记录两个市场）
-    if (upResult.success) {
-        recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
-    }
-    if (downResult.success && opportunity.isCrossPool && opportunity.downConditionId) {
-        recordTradePrice(opportunity.downConditionId, opportunity.upAskPrice, opportunity.downAskPrice);
+    // 记录下单时间（同池增持不记录冷却，以便连续快速执行）
+    if (!opportunity.isSamePoolRebalance) {
+        if (upResult.success) {
+            recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
+        }
+        // 跨池套利时记录两个市场
+        if (downResult.success && opportunity.isCrossPool && opportunity.downConditionId) {
+            recordTradePrice(opportunity.downConditionId, opportunity.upAskPrice, opportunity.downAskPrice);
+        }
     }
     
     // 打印执行结果

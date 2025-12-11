@@ -1065,7 +1065,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
                 const neededShares = avgPrices.btc.imbalance;  // 需要平衡的数量
-                const maxShares = Math.min(neededShares, btcDownAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                const maxShares = Math.min(neededShares, btcDownAskSize);  // 同池增持：吃掉全部深度
                 
                 if (maxShares >= 1) {
                     const defaultAnalysis = {
@@ -1126,7 +1126,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
                 const neededShares = Math.abs(avgPrices.btc.imbalance);
-                const maxShares = Math.min(neededShares, btcUpAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                const maxShares = Math.min(neededShares, btcUpAskSize);  // 同池增持：吃掉全部深度
                 
                 if (maxShares >= 1) {
                     const defaultAnalysis = {
@@ -1192,7 +1192,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
                 const neededShares = Math.abs(avgPrices.eth.imbalance);
-                const maxShares = Math.min(neededShares, ethUpAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                const maxShares = Math.min(neededShares, ethUpAskSize);  // 同池增持：吃掉全部深度
                 
                 if (maxShares >= 1) {
                     const defaultAnalysis = {
@@ -1253,7 +1253,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
                 const neededShares = avgPrices.eth.imbalance;
-                const maxShares = Math.min(neededShares, ethDownAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                const maxShares = Math.min(neededShares, ethDownAskSize);  // 同池增持：吃掉全部深度
                 
                 if (maxShares >= 1) {
                     const defaultAnalysis = {
