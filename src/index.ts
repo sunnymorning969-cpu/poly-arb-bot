@@ -200,14 +200,34 @@ const selectOpportunities = (
         }
         
         // ============ 以下检查仅适用于常规套利 ============
-        // 1. 价格有效性检查
-        if (opp.upAskPrice < 0.01 || opp.downAskPrice < 0.01) {
-            continue;
+        // 1. 价格有效性检查（根据交易类型检查相应的价格）
+        if (opp.tradingAction === 'buy_both') {
+            if (opp.upAskPrice < 0.01 || opp.downAskPrice < 0.01) {
+                continue;
+            }
+        } else if (opp.tradingAction === 'buy_up_only') {
+            if (opp.upAskPrice < 0.01) {
+                continue;
+            }
+        } else if (opp.tradingAction === 'buy_down_only') {
+            if (opp.downAskPrice < 0.01) {
+                continue;
+            }
         }
         
-        // 2. 深度检查
-        if (opp.upAskSize < 1 || opp.downAskSize < 1) {
-            continue;
+        // 2. 深度检查（根据交易类型检查相应的深度）
+        if (opp.tradingAction === 'buy_both') {
+            if (opp.upAskSize < 1 || opp.downAskSize < 1) {
+                continue;
+            }
+        } else if (opp.tradingAction === 'buy_up_only') {
+            if (opp.upAskSize < 1) {
+                continue;
+            }
+        } else if (opp.tradingAction === 'buy_down_only') {
+            if (opp.downAskSize < 1) {
+                continue;
+            }
         }
         
         // 3. buy_both 必须满足合计 < $1.00
@@ -253,7 +273,7 @@ const selectOpportunities = (
         // 显示选中的机会（带跨池子和策略信息）
         const actionEmoji = opp.tradingAction === 'buy_both' ? '⚖️' : 
                            opp.tradingAction === 'buy_up_only' ? '📈' : '📉';
-        const crossPoolTag = opp.isCrossPool ? '🔀' : '';
+        const poolTag = opp.isCrossPool ? '🔀' : (opp.isSamePoolRebalance ? '🔄' : '');
         const groupInfo = opp.groupAnalysis?.hasPosition ? 
             `组:U${opp.groupAnalysis.imbalance > 0 ? '+' : ''}${opp.groupAnalysis.imbalance.toFixed(0)}` : '新仓';
         
@@ -262,10 +282,17 @@ const selectOpportunities = (
         const isBtcDown = opp.downMarketSlug?.includes('btc') || opp.downMarketSlug?.includes('bitcoin');
         const upSource = isBtcUp ? 'BTC' : 'ETH';
         const downSource = isBtcDown ? 'BTC' : 'ETH';
-        const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
         
-        // 始终显示时间场 + 组合信息
-        Logger.success(`${actionEmoji}${crossPoolTag} ${opp.timeGroup} ${pairInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
+        // 同池增持显示不同的格式
+        if (opp.isSamePoolRebalance) {
+            const asset = opp.rebalanceAsset?.toUpperCase() || upSource;
+            const side = opp.rebalanceSide === 'up' ? '↑' : '↓';
+            Logger.success(`${actionEmoji}${poolTag} ${opp.timeGroup} ${asset}${side}同池增持 | 组合:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
+        } else {
+            const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
+            // 始终显示时间场 + 组合信息
+            Logger.success(`${actionEmoji}${poolTag} ${opp.timeGroup} ${pairInfo} | Up:$${opp.upAskPrice.toFixed(2)} Down:$${opp.downAskPrice.toFixed(2)} | 合计:$${opp.combinedCost.toFixed(3)} | ${groupInfo} | ${opp.tradingAction}`);
+        }
     }
     
     return selected;

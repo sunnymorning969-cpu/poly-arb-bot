@@ -503,11 +503,11 @@ export const executeArbitrage = async (
         downShares = targetShares;
         
     } else if (action === 'buy_up_only') {
-        // 对冲交易：使用 maxShares（已在 scanner 中计算好的目标数量）
+        // 对冲/同池增持：使用 maxShares（已在 scanner 中计算好的目标数量），尽量多买
         // 普通交易：90% 深度，有金额限制
-        if (opportunity.isHedge) {
-            // 对冲：使用预计算的 maxShares，不超过市场深度
-            upShares = Math.min(opportunity.maxShares, opportunity.upAskSize);
+        if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
+            // 对冲/同池增持：使用预计算的 maxShares，不超过市场深度，尽量多买
+            upShares = Math.min(opportunity.maxShares, opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
         } else {
             const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
@@ -515,20 +515,20 @@ export const executeArbitrage = async (
         }
         
         if (upShares < 1) {
-            // 对冲时打印更详细的深度信息
-            if (opportunity.isHedge) {
-                Logger.warning(`⚠️ 对冲等待深度: Up 当前深度=${opportunity.upAskSize.toFixed(1)} @ $${opportunity.upAskPrice.toFixed(2)}`);
+            // 对冲/同池增持时打印更详细的深度信息
+            if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
+                Logger.warning(`⚠️ 等待深度: Up 当前深度=${opportunity.upAskSize.toFixed(1)} @ $${opportunity.upAskPrice.toFixed(2)}`);
             } else {
                 Logger.warning(`❌ Up 深度不足: ${opportunity.upAskSize.toFixed(0)}`);
             }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
-        // 对冲交易：使用 maxShares（已在 scanner 中计算好的目标数量）
+        // 对冲/同池增持：使用 maxShares（已在 scanner 中计算好的目标数量），尽量多买
         // 普通交易：90% 深度，有金额限制
-        if (opportunity.isHedge) {
-            // 对冲：使用预计算的 maxShares，不超过市场深度
-            downShares = Math.min(opportunity.maxShares, opportunity.downAskSize);
+        if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
+            // 对冲/同池增持：使用预计算的 maxShares，不超过市场深度，尽量多买
+            downShares = Math.min(opportunity.maxShares, opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
         } else {
             const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;
@@ -536,9 +536,9 @@ export const executeArbitrage = async (
         }
         
         if (downShares < 1) {
-            // 对冲时打印更详细的深度信息
-            if (opportunity.isHedge) {
-                Logger.warning(`⚠️ 对冲等待深度: Down 当前深度=${opportunity.downAskSize.toFixed(1)} @ $${opportunity.downAskPrice.toFixed(2)}`);
+            // 对冲/同池增持时打印更详细的深度信息
+            if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
+                Logger.warning(`⚠️ 等待深度: Down 当前深度=${opportunity.downAskSize.toFixed(1)} @ $${opportunity.downAskPrice.toFixed(2)}`);
             } else {
                 Logger.warning(`❌ Down 深度不足: ${opportunity.downAskSize.toFixed(0)}`);
             }
