@@ -35,6 +35,15 @@ export interface SettlementResult {
     totalCost: number;       // 总成本
     profit: number;          // 盈亏
     profitPercent: number;   // 盈亏百分比
+    // 仓位平衡度（结算时的快照）
+    balanceInfo?: {
+        btcUp: number;
+        btcDown: number;
+        btcBalancePercent: number;
+        ethUp: number;
+        ethDown: number;
+        ethBalancePercent: number;
+    };
 }
 
 // 结算回调（用于发送通知）
@@ -579,6 +588,23 @@ export const settlePosition = (pos: Position, outcome: 'up' | 'down'): Settlemen
     const profit = payout - totalCost;
     const profitPercent = totalCost > 0 ? (profit / totalCost) * 100 : 0;
     
+    // 获取该 timeGroup 的仓位平衡度
+    const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+    const timeGroup: TimeGroup = is15min ? '15min' : '1hr';
+    const avgPrices = getAssetAvgPrices(timeGroup);
+    
+    const btcUp = avgPrices.btc?.upShares || 0;
+    const btcDown = avgPrices.btc?.downShares || 0;
+    const ethUp = avgPrices.eth?.upShares || 0;
+    const ethDown = avgPrices.eth?.downShares || 0;
+    
+    const btcBalancePercent = (btcUp > 0 || btcDown > 0) 
+        ? Math.min(btcUp, btcDown) / Math.max(btcUp, btcDown) * 100 
+        : 0;
+    const ethBalancePercent = (ethUp > 0 || ethDown > 0) 
+        ? Math.min(ethUp, ethDown) / Math.max(ethUp, ethDown) * 100 
+        : 0;
+    
     const result: SettlementResult = {
         position: { ...pos },
         outcome,
@@ -586,6 +612,14 @@ export const settlePosition = (pos: Position, outcome: 'up' | 'down'): Settlemen
         totalCost,
         profit,
         profitPercent,
+        balanceInfo: {
+            btcUp,
+            btcDown,
+            btcBalancePercent,
+            ethUp,
+            ethDown,
+            ethBalancePercent,
+        },
     };
     
     // 保存到持久化存储

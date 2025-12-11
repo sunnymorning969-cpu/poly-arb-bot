@@ -13,7 +13,7 @@ import { SignatureType } from '@polymarket/order-utils';
 import CONFIG from './config';
 import Logger from './logger';
 import { ArbitrageOpportunity } from './scanner';
-import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis } from './positions';
+import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis, getAssetAvgPrices } from './positions';
 import { recordHedgeCost, recordHedgeFill } from './hedging';
 
 let clobClient: ClobClient | null = null;
@@ -636,7 +636,9 @@ export const executeArbitrage = async (
     
     // 打印执行结果
     const success = upResult.success || downResult.success;
-    const poolTag = opportunity.isCrossPool ? '🔀跨池' : '📊同池';
+    // 区分：跨池套利、同池增持、普通同池
+    const poolTag = opportunity.isCrossPool ? '🔀跨池' : 
+                   opportunity.isSamePoolRebalance ? '🔄同池增持' : '📊同池';
     const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
     const timeTag = opportunity.timeGroup || '';
     
@@ -672,6 +674,25 @@ export const executeArbitrage = async (
                 ? `Up ${upResult.filled.toFixed(1)}×$${upResult.avgPrice.toFixed(2)}`
                 : `Down ${downResult.filled.toFixed(1)}×$${downResult.avgPrice.toFixed(2)}`;
             Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: ${filledStr} | 本次$${totalCost.toFixed(2)} | 本轮$${groupCost.toFixed(2)}`);
+        }
+        
+        // 同池增持成交后，显示仓位平衡率
+        if (opportunity.isSamePoolRebalance && opportunity.timeGroup) {
+            const avgPrices = getAssetAvgPrices(opportunity.timeGroup);
+            const btcUp = avgPrices.btc?.upShares || 0;
+            const btcDown = avgPrices.btc?.downShares || 0;
+            const ethUp = avgPrices.eth?.upShares || 0;
+            const ethDown = avgPrices.eth?.downShares || 0;
+            
+            // 计算平衡率：min/max * 100%
+            const btcBalance = (btcUp > 0 || btcDown > 0) 
+                ? (Math.min(btcUp, btcDown) / Math.max(btcUp, btcDown) * 100).toFixed(1) 
+                : '0.0';
+            const ethBalance = (ethUp > 0 || ethDown > 0) 
+                ? (Math.min(ethUp, ethDown) / Math.max(ethUp, ethDown) * 100).toFixed(1) 
+                : '0.0';
+            
+            Logger.info(`   📊 仓位平衡: BTC(Up=${btcUp.toFixed(0)} Down=${btcDown.toFixed(0)} 平衡${btcBalance}%) | ETH(Up=${ethUp.toFixed(0)} Down=${ethDown.toFixed(0)} 平衡${ethBalance}%)`);
         }
     }
     

@@ -515,6 +515,17 @@ export const notifySingleSettlement = async (
     // 累计统计
     const overallProfitEmoji = overallStats.totalProfit >= 0 ? '📈' : '📉';
     
+    // 平衡度信息
+    let balanceInfoStr = '';
+    if (result.balanceInfo) {
+        const bi = result.balanceInfo;
+        balanceInfoStr = `
+🛡️ <b>仓位平衡度:</b>
+   • BTC: Up=${bi.btcUp.toFixed(0)} Down=${bi.btcDown.toFixed(0)} (${bi.btcBalancePercent.toFixed(1)}%)
+   • ETH: Up=${bi.ethUp.toFixed(0)} Down=${bi.ethDown.toFixed(0)} (${bi.ethBalancePercent.toFixed(1)}%)
+`;
+    }
+
     const message = `
 ${profitEmoji} <b>${timeGroupLabel}场 第${currentCount}次结算</b>
 
@@ -525,7 +536,7 @@ ${groupIcon} <b>${asset} ${timeGroupLabel}</b>
    • 成本: $${result.totalCost.toFixed(2)}
    • 收回: $${result.payout.toFixed(2)}
    • 盈亏: <b>${profitSign}$${result.profit.toFixed(2)}</b> (${profitSign}${profitPercent.toFixed(1)}%)
-
+${balanceInfoStr}
 ━━━━━━━━━━━━━━━
 <b>📊 累计统计:</b>
    • 已结算: ${overallStats.totalSettled} 个事件

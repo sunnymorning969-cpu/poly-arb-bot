@@ -21,7 +21,7 @@
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
-import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
+import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss, getAssetAvgPrices, getGroupCostAnalysis } from './positions';
 import { notifyStopLoss } from './telegram';
 import { isHedgeCompleted, isHedging } from './hedging';
 import { isBtcVolatilityTooLow, getBtcChangeInfo } from './binance';
@@ -715,6 +715,24 @@ export const printEventSummary = (timeGroup: TimeGroup): void => {
         ? (summary.totalBelowThreshold / summary.totalCheckCount * 100).toFixed(1) 
         : '0.0';
     
+    // 获取仓位信息，计算同池平衡效果
+    const avgPrices = getAssetAvgPrices(timeGroup);
+    const groupCost = getGroupCostAnalysis(timeGroup);
+    
+    // 计算同池平衡后的保护
+    // 双输时：BTC Down 赢 + ETH Up 赢
+    // 如果没有同池平衡：BTC Up 和 ETH Down 全部归零，损失 100%
+    // 如果有同池平衡：可收回 min(BTC Up, BTC Down) + min(ETH Up, ETH Down)
+    const btcUpShares = avgPrices.btc?.upShares || 0;
+    const btcDownShares = avgPrices.btc?.downShares || 0;
+    const ethUpShares = avgPrices.eth?.upShares || 0;
+    const ethDownShares = avgPrices.eth?.downShares || 0;
+    
+    const btcBalanced = Math.min(btcUpShares, btcDownShares);  // BTC 池平衡的 shares
+    const ethBalanced = Math.min(ethUpShares, ethDownShares);  // ETH 池平衡的 shares
+    const totalBalanced = btcBalanced + ethBalanced;           // 总平衡 shares（双输时可收回）
+    const totalCost = groupCost?.totalCost || 0;
+    
     Logger.info(`\n${'═'.repeat(60)}`);
     Logger.info(`📊 [${timeGroup}] 事件统计摘要`);
     Logger.info(`${'─'.repeat(60)}`);
@@ -726,6 +744,31 @@ export const printEventSummary = (timeGroup: TimeGroup): void => {
     Logger.info(`      低于阈值: ${summary.riskTriggerCount} 次 (${(summary.riskRatio * 100).toFixed(1)}%)`);
     Logger.info(`   💰 价格统计:`);
     Logger.info(`      平均: $${summary.avgCombinedBid.toFixed(3)} | 最低: $${summary.minCombinedBid.toFixed(3)} | 最高: $${summary.maxCombinedBid.toFixed(3)}`);
+    
+    // 同池平衡分析
+    if (totalCost > 0 && (btcUpShares > 0 || ethDownShares > 0)) {
+        Logger.info(`   🛡️ 同池平衡分析 (双输保护):`);
+        Logger.info(`      BTC池: Up=${btcUpShares.toFixed(0)} Down=${btcDownShares.toFixed(0)} | 平衡=${btcBalanced.toFixed(0)}`);
+        Logger.info(`      ETH池: Up=${ethUpShares.toFixed(0)} Down=${ethDownShares.toFixed(0)} | 平衡=${ethBalanced.toFixed(0)}`);
+        Logger.info(`      总成本: $${totalCost.toFixed(2)}`);
+        
+        if (totalBalanced > 0) {
+            const lossWithoutBalance = totalCost;  // 没有平衡时双输损失 100%
+            const recoverable = totalBalanced;      // 平衡后可收回的金额（每 share = $1）
+            const actualLoss = totalCost - recoverable;
+            const lossReduction = (recoverable / totalCost * 100);
+            const actualLossPercent = (actualLoss / totalCost * 100);
+            
+            Logger.info(`      📉 如果双输:`);
+            Logger.info(`         无平衡损失: $${lossWithoutBalance.toFixed(2)} (100%)`);
+            Logger.info(`         平衡后可收回: $${recoverable.toFixed(2)} (${lossReduction.toFixed(1)}%)`);
+            Logger.info(`         实际损失: $${actualLoss.toFixed(2)} (${actualLossPercent.toFixed(1)}%)`);
+            Logger.info(`         🎯 损失减少: $${recoverable.toFixed(2)} (-${lossReduction.toFixed(1)}%)`);
+        } else {
+            Logger.info(`      ⚠️ 未进行同池平衡，双输将损失 100%`);
+        }
+    }
+    
     Logger.info(`   🚨 止损状态: ${summary.wasStopLossTriggered ? '✅ 已触发' : '❌ 未触发'}`);
     Logger.info(`${'═'.repeat(60)}\n`);
 };

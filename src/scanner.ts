@@ -97,6 +97,10 @@ export interface ArbitrageOpportunity {
     // 对冲标记
     isHedge?: boolean;  // 是否为对冲补仓交易
     hedgeSide?: 'btcUp' | 'btcDown' | 'ethUp' | 'ethDown';  // 对冲方向
+    // 同池增持标记
+    isSamePoolRebalance?: boolean;  // 是否为同池增持交易
+    rebalanceAsset?: 'btc' | 'eth';  // 增持的资产
+    rebalanceSide?: 'up' | 'down';   // 增持的方向
 }
 
 // API 响应接口
@@ -1068,9 +1072,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         isSamePoolRebalance: true,  // 标记为同池增持
                         rebalanceAsset: 'btc',
                         rebalanceSide: 'down',
-                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    } as ArbitrageOpportunity);
                     
-                    Logger.info(`🔄 [同池] BTC Down 机会: 平均Up $${btcUpAvgPrice.toFixed(3)} + Down $${btcDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                    Logger.info(`🔄 [同池增持] BTC Down: 平均Up $${btcUpAvgPrice.toFixed(3)} + 当前Down $${btcDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
                 }
             }
         }
@@ -1115,9 +1119,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         isSamePoolRebalance: true,
                         rebalanceAsset: 'btc',
                         rebalanceSide: 'up',
-                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    } as ArbitrageOpportunity);
                     
-                    Logger.info(`🔄 [同池] BTC Up 机会: Up $${btcUpAskPrice.toFixed(3)} + 平均Down $${btcDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                    Logger.info(`🔄 [同池增持] BTC Up: 当前Up $${btcUpAskPrice.toFixed(3)} + 平均Down $${btcDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
                 }
             }
         }
@@ -1162,9 +1166,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         isSamePoolRebalance: true,
                         rebalanceAsset: 'eth',
                         rebalanceSide: 'up',
-                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    } as ArbitrageOpportunity);
                     
-                    Logger.info(`🔄 [同池] ETH Up 机会: Up $${ethUpAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                    Logger.info(`🔄 [同池增持] ETH Up: 当前Up $${ethUpAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
                 }
             }
         }
@@ -1209,9 +1213,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         isSamePoolRebalance: true,
                         rebalanceAsset: 'eth',
                         rebalanceSide: 'down',
-                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    } as ArbitrageOpportunity);
                     
-                    Logger.info(`🔄 [同池] ETH Down 机会: 平均Up $${ethUpAvgPrice.toFixed(3)} + Down $${ethDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                    Logger.info(`🔄 [同池增持] ETH Down: 平均Up $${ethUpAvgPrice.toFixed(3)} + 当前Down $${ethDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
                 }
             }
         }
