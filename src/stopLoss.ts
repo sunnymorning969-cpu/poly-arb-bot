@@ -663,6 +663,13 @@ export const getStopLossStatus = (): {
 };
 
 /**
+ * 获取指定 timeGroup 的止损信号（如果已触发）
+ */
+export const getTriggeredSignal = (timeGroup: TimeGroup): StopLossState | null => {
+    return triggeredStopLoss.get(timeGroup) || null;
+};
+
+/**
  * 获取事件统计摘要（事件结束时调用）
  */
 export const getEventSummary = (timeGroup: TimeGroup): EventSummary | null => {
@@ -773,5 +780,6 @@ export default {
     executeStopLoss,
     clearTriggeredStopLoss,
     getStopLossStatus,
+    getTriggeredSignal,
 };
 

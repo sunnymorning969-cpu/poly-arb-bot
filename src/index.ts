@@ -15,7 +15,7 @@ import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
-import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility } from './stopLoss';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal } from './stopLoss';
 import { executeSell } from './executor';
 import { getGlobalHedgeStats } from './hedging';
 import { initBinanceWs, isBinanceWsConnected } from './binance';
@@ -378,8 +378,11 @@ const mainLoop = async () => {
                     const pauseCheck = shouldPauseTrading(timeGroup);
                     if (pauseCheck.pause || pauseCheck.shouldHedge) {
                         shouldSkipArbitrage = true;
-                        // 执行平仓止损
-                        await executeStopLoss(timeGroup);
+                        // 获取止损信号并执行平仓
+                        const signal = getTriggeredSignal(timeGroup);
+                        if (signal) {
+                            await executeStopLoss(executeSell, signal);
+                        }
                     }
                 }
             }
