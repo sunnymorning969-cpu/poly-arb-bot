@@ -81,7 +81,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
-        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '2'}`,
+        `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '6'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
         `MAX_ARBITRAGE_PERCENT_FINAL=${config.MAX_ARBITRAGE_PERCENT_FINAL || '15'}`,
         `MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=${config.MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES || '13'}`,
@@ -101,17 +101,17 @@ const saveConfig = (config: Record<string, string>): void => {
         `BINANCE_MIN_VOLATILITY_PERCENT=${config.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'}`,
         '',
         '# 同池增持策略（利用平均持仓价在同池内套利，减少止损亏损）',
-        `SAME_POOL_REBALANCE_ENABLED=${config.SAME_POOL_REBALANCE_ENABLED || 'false'}`,
-        `SAME_POOL_SAFETY_MARGIN=${config.SAME_POOL_SAFETY_MARGIN || '2'}`,
+        `SAME_POOL_REBALANCE_ENABLED=${config.SAME_POOL_REBALANCE_ENABLED || 'true'}`,
+        `SAME_POOL_SAFETY_MARGIN=${config.SAME_POOL_SAFETY_MARGIN || '3'}`,
         '',
-        '# 紧急平衡（最后X秒强制平衡，允许小亏损换取仓位平衡）',
-        `EMERGENCY_BALANCE_ENABLED=${config.EMERGENCY_BALANCE_ENABLED || 'false'}`,
+        '# 紧急平衡（最后X秒停止跨池，放宽同池限制）',
+        `EMERGENCY_BALANCE_ENABLED=${config.EMERGENCY_BALANCE_ENABLED || 'true'}`,
         `EMERGENCY_BALANCE_SECONDS=${config.EMERGENCY_BALANCE_SECONDS || '20'}`,
         `EMERGENCY_BALANCE_THRESHOLD=${config.EMERGENCY_BALANCE_THRESHOLD || '60'}`,
-        `EMERGENCY_BALANCE_MAX_LOSS=${config.EMERGENCY_BALANCE_MAX_LOSS || '3'}`,
+        `EMERGENCY_BALANCE_MAX_LOSS=${config.EMERGENCY_BALANCE_MAX_LOSS || '2'}`,
         '',
-        '# 极端不平衡提前平仓（平衡度<30%说明走势确定，提前平掉不平衡部分）',
-        `EXTREME_IMBALANCE_ENABLED=${config.EXTREME_IMBALANCE_ENABLED || 'false'}`,
+        '# 极端不平衡提前平仓（平衡度<30%说明走势确定，平掉会输的一边）',
+        `EXTREME_IMBALANCE_ENABLED=${config.EXTREME_IMBALANCE_ENABLED || 'true'}`,
         `EXTREME_IMBALANCE_SECONDS=${config.EXTREME_IMBALANCE_SECONDS || '90'}`,
         `EXTREME_IMBALANCE_THRESHOLD=${config.EXTREME_IMBALANCE_THRESHOLD || '30'}`,
         '',
@@ -494,7 +494,7 @@ const main = async () => {
     log.info('═══════════════════════════════════════════════════════');
     console.log('');
     
-    const currentSamePool = config.SAME_POOL_REBALANCE_ENABLED || 'false';
+    const currentSamePool = config.SAME_POOL_REBALANCE_ENABLED || 'true';
     const samePoolEnabled = await question(`启用同池增持 [true/false] (当前: ${currentSamePool}): `);
     if (samePoolEnabled === 'true' || samePoolEnabled === 'false') {
         config.SAME_POOL_REBALANCE_ENABLED = samePoolEnabled;
@@ -514,12 +514,12 @@ const main = async () => {
         log.info('');
         log.info('  建议：2-3%（确保最终组合成本低于 1）');
         log.info('═══════════════════════════════════════════════════════');
-        const currentSafetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
+        const currentSafetyMargin = config.SAME_POOL_SAFETY_MARGIN || '3';
         const safetyMargin = await question(`同池安全边际 % (当前: ${currentSafetyMargin}): `);
         if (safetyMargin && !isNaN(parseFloat(safetyMargin))) {
             config.SAME_POOL_SAFETY_MARGIN = safetyMargin;
         } else if (!config.SAME_POOL_SAFETY_MARGIN) {
-            config.SAME_POOL_SAFETY_MARGIN = '2';
+            config.SAME_POOL_SAFETY_MARGIN = '3';
         }
         
         // ===== 紧急平衡 =====
@@ -540,7 +540,7 @@ const main = async () => {
         log.info('  例如允许 5% 亏损：平均 $0.45 + 深度 $0.58 = $1.03 也能买');
         log.info('═══════════════════════════════════════════════════════');
         
-        const currentEmergencyEnabled = config.EMERGENCY_BALANCE_ENABLED || 'false';
+        const currentEmergencyEnabled = config.EMERGENCY_BALANCE_ENABLED || 'true';
         const emergencyEnabled = await question(`启用紧急平衡 [true/false] (当前: ${currentEmergencyEnabled}): `);
         if (emergencyEnabled === 'true' || emergencyEnabled === 'false') {
             config.EMERGENCY_BALANCE_ENABLED = emergencyEnabled;
@@ -579,12 +579,12 @@ const main = async () => {
             log.info('');
             log.info('  ⚠️ 风险：设置过高会导致紧急买入带来更大亏损');
             log.info('═══════════════════════════════════════════════════════');
-            const currentMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '3';
+            const currentMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '2';
             const maxLoss = await question(`紧急平衡允许亏损 % (当前: ${currentMaxLoss}): `);
             if (maxLoss && !isNaN(parseFloat(maxLoss))) {
                 config.EMERGENCY_BALANCE_MAX_LOSS = maxLoss;
             } else if (!config.EMERGENCY_BALANCE_MAX_LOSS) {
-                config.EMERGENCY_BALANCE_MAX_LOSS = '3';
+                config.EMERGENCY_BALANCE_MAX_LOSS = '2';
             }
         }
         
@@ -609,7 +609,7 @@ const main = async () => {
         log.info('  保留：BTC 300/300 平衡 + ETH 300/300 平衡');
         log.info('═══════════════════════════════════════════════════════');
         
-        const currentExtremeEnabled = config.EXTREME_IMBALANCE_ENABLED || 'false';
+        const currentExtremeEnabled = config.EXTREME_IMBALANCE_ENABLED || 'true';
         const extremeEnabled = await question(`启用极端不平衡提前平仓 [true/false] (当前: ${currentExtremeEnabled}): `);
         if (extremeEnabled === 'true' || extremeEnabled === 'false') {
             config.EXTREME_IMBALANCE_ENABLED = extremeEnabled;
