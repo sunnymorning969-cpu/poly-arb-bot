@@ -1035,7 +1035,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
         const btcDownAskPrice = btcMarketData.downBook.bestAsk;
-        const btcDownAskSize = btcMarketData.downBook.askSize;
+        const btcDownAskSize = btcMarketData.downBook.bestAskSize;
         
         if (btcUpAvgPrice > 0 && btcDownAskPrice > 0) {
             const combinedCost = btcUpAvgPrice + btcDownAskPrice;
@@ -1082,7 +1082,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
         const btcUpAskPrice = btcMarketData.upBook.bestAsk;
-        const btcUpAskSize = btcMarketData.upBook.askSize;
+        const btcUpAskSize = btcMarketData.upBook.bestAskSize;
         
         if (btcDownAvgPrice > 0 && btcUpAskPrice > 0) {
             const combinedCost = btcUpAskPrice + btcDownAvgPrice;
@@ -1129,7 +1129,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
         const ethUpAskPrice = ethMarketData.upBook.bestAsk;
-        const ethUpAskSize = ethMarketData.upBook.askSize;
+        const ethUpAskSize = ethMarketData.upBook.bestAskSize;
         
         if (ethDownAvgPrice > 0 && ethUpAskPrice > 0) {
             const combinedCost = ethUpAskPrice + ethDownAvgPrice;
@@ -1176,7 +1176,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
         const ethDownAskPrice = ethMarketData.downBook.bestAsk;
-        const ethDownAskSize = ethMarketData.downBook.askSize;
+        const ethDownAskSize = ethMarketData.downBook.bestAskSize;
         
         if (ethUpAvgPrice > 0 && ethDownAskPrice > 0) {
             const combinedCost = ethUpAvgPrice + ethDownAskPrice;
