@@ -9,13 +9,13 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities, getMarketEndTime } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities, generateSamePoolOpportunities, getMarketEndTime } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
-import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal } from './stopLoss';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal, recordArbitrageOpportunity } from './stopLoss';
 import { executeSell } from './executor';
 import { getGlobalHedgeStats } from './hedging';
 import { initBinanceWs, isBinanceWsConnected } from './binance';
@@ -95,6 +95,14 @@ const printConfig = () => {
         Logger.info(`   状态: ✅ 启用`);
         Logger.info(`   检查窗口: 结束前 ${CONFIG.BINANCE_CHECK_WINDOW_SEC} 秒`);
         Logger.info(`   波动阈值: ±${CONFIG.BINANCE_MIN_VOLATILITY_PERCENT}%`);
+    } else {
+        Logger.info(`   状态: ❌ 未启用`);
+    }
+    Logger.divider();
+    Logger.info('🔄 同池增持:');
+    if (CONFIG.SAME_POOL_REBALANCE_ENABLED) {
+        Logger.info(`   状态: ✅ 启用`);
+        Logger.info(`   策略: 利用平均持仓价在同池内套利，逐步平衡仓位`);
     } else {
         Logger.info(`   状态: ❌ 未启用`);
     }
@@ -220,6 +228,10 @@ const selectOpportunities = (
             const downSource = isBtcDown ? 'BTC' : 'ETH';
             const pairInfo = opp.isCrossPool ? `${upSource}↑${downSource}↓` : `${upSource}`;
             Logger.warning(`⚠️ ${opp.timeGroup} ${pairInfo} 敞口过大: 组合$${opp.combinedCost.toFixed(2)} (Up$${opp.upAskPrice.toFixed(2)}+Down$${opp.downAskPrice.toFixed(2)}) < $${minCombinedCost.toFixed(2)}，跳过`);
+            // 记录到风险统计（跳过的也算套利机会）
+            if (opp.timeGroup) {
+                recordArbitrageOpportunity(opp.timeGroup, opp.combinedCost, opp.endDate);
+            }
             continue;
         }
         
@@ -232,6 +244,11 @@ const selectOpportunities = (
         }
         
         selected.push(opp);
+        
+        // 记录到风险统计（选中执行的套利机会）
+        if (opp.timeGroup) {
+            recordArbitrageOpportunity(opp.timeGroup, opp.combinedCost, opp.endDate);
+        }
         
         // 显示选中的机会（带跨池子和策略信息）
         const actionEmoji = opp.tradingAction === 'buy_both' ? '⚖️' : 
@@ -403,7 +420,16 @@ const mainLoop = async () => {
             
             // 只有在没有对冲需求时才进行常规套利
             if (!shouldSkipArbitrage && opportunities.length === 0) {
+                // 扫描跨池套利机会
                 opportunities = await scanArbitrageOpportunities(true);
+                
+                // 同时扫描同池增持机会（基于平均持仓价）
+                if (CONFIG.SAME_POOL_REBALANCE_ENABLED) {
+                    for (const timeGroup of ['15min', '1hr'] as const) {
+                        const samePoolOpps = generateSamePoolOpportunities(timeGroup);
+                        opportunities.push(...samePoolOpps);
+                    }
+                }
             }
             
             if (opportunities.length > 0) {
@@ -471,15 +497,8 @@ const mainLoop = async () => {
             
             // 每15秒检查：结算到期仓位 + 事件切换
             if (now - lastPriceLog >= 15000) {
-                const settledResults = await checkAndSettleExpired();  // 异步获取真实结果
-                
-                // 如果有结算结果，逐个发送通知
-                if (settledResults.length > 0) {
-                    for (const result of settledResults) {
-                        const overallStats = getOverallStats();  // 每次获取最新统计
-                        await notifySingleSettlement(result, overallStats);
-                    }
-                }
+                // 异步获取真实结果（通知由 onSettlement 回调统一发送，避免重复）
+                await checkAndSettleExpired();
                 
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
@@ -502,14 +521,8 @@ const mainLoop = async () => {
             
             // 每10分钟发送一次累计盈亏统计到 Telegram
             if (now - lastPositionReport >= 10 * 60 * 1000) {
-                // 先检查结算
-                const moreSettled = await checkAndSettleExpired();
-                if (moreSettled.length > 0) {
-                    for (const result of moreSettled) {
-                        const overallStats = getOverallStats();
-                        await notifySingleSettlement(result, overallStats);
-                    }
-                }
+                // 先检查结算（通知由 onSettlement 回调统一发送）
+                await checkAndSettleExpired();
                 
                 // 发送运行统计
                 const overallStats = getOverallStats();

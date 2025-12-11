@@ -11,8 +11,8 @@ import axios from 'axios';
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
-import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup } from './positions';
-import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, recordArbitrageOpportunity } from './stopLoss';
+import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup, getAssetAvgPrices } from './positions';
+import { updateTokenMap, clearTriggeredStopLoss, printEventSummary } from './stopLoss';
 import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog, canExecuteHedge, getRemainingHedge } from './hedging';
 
 // 扫描级别的冷却记录（防止重复检测）
@@ -542,12 +542,8 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         // ============ 核心套利条件 ============
         // 只有 Up + Down < $1.00 才是真正的套利机会
         const isRealArbitrage = crossPoolCost < 0.995;
-        
-        // 只在有套利空间时才记录到止损模块（用于风险统计）
-        // 如果组合成本 >= $1，说明没有套利机会，不计入统计
-        if (isRealArbitrage) {
-            recordArbitrageOpportunity(timeGroup, crossPoolCost, cheapestUp.market.end_date_iso);
-        }
+        // 注意：风险统计 recordArbitrageOpportunity 在 index.ts 中调用
+        // 与交易日志（执行或跳过）保持一致
         
         // 预测组合买入后的成本
         const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
@@ -994,6 +990,237 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
 };
 
 /**
+ * 生成同池增持机会（基于平均持仓价）
+ * 
+ * 策略：
+ * - 如果持有 BTC Up，检查 BTC Up 平均持仓价 + BTC Down 当前价 < 1
+ * - 如果持有 ETH Down，检查 ETH Up 当前价 + ETH Down 平均持仓价 < 1
+ * - 买入数量不超过需要平衡的数量
+ */
+export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOpportunity[] => {
+    if (!CONFIG.SAME_POOL_REBALANCE_ENABLED) return [];
+    
+    const opportunities: ArbitrageOpportunity[] = [];
+    const avgPrices = getAssetAvgPrices(timeGroup);
+    
+    // 获取市场数据
+    let btcMarket: PolymarketMarket | null = null;
+    let ethMarket: PolymarketMarket | null = null;
+    
+    for (const market of cachedMarkets) {
+        const is15min = market.slug.includes('15m') || market.slug.includes('15min');
+        const marketTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        if (marketTimeGroup !== timeGroup) continue;
+        
+        const isBtc = market.slug.toLowerCase().includes('btc');
+        const isEth = market.slug.toLowerCase().includes('eth');
+        
+        if (isBtc) btcMarket = market;
+        if (isEth) ethMarket = market;
+    }
+    
+    if (!btcMarket || !ethMarket) return opportunities;
+    
+    // 获取订单簿
+    const btcConditionId = btcMarket.condition_id || btcMarket.conditionId;
+    const ethConditionId = ethMarket.condition_id || ethMarket.conditionId;
+    const btcBook = orderBookManager.getOrderBook(btcConditionId);
+    const ethBook = orderBookManager.getOrderBook(ethConditionId);
+    
+    if (!btcBook || !ethBook) return opportunities;
+    
+    // BTC 池：如果持有 BTC Up 且 Up > Down，尝试买入 BTC Down
+    if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
+        const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
+        const btcDownAskPrice = btcBook.downBook.bestAsk;
+        const btcDownAskSize = btcBook.downBook.askSize;
+        
+        if (btcUpAvgPrice > 0 && btcDownAskPrice > 0) {
+            const combinedCost = btcUpAvgPrice + btcDownAskPrice;
+            
+            if (combinedCost < 1) {
+                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+                const neededShares = avgPrices.btc.imbalance;  // 需要平衡的数量
+                const maxShares = Math.min(neededShares, btcDownAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                
+                if (maxShares >= 1) {
+                    opportunities.push({
+                        conditionId: btcConditionId,
+                        slug: btcMarket.slug,
+                        title: `${timeGroup} BTC 同池增持`,
+                        upToken: btcMarket.upToken!,
+                        downToken: btcMarket.downToken!,
+                        timeGroup,
+                        isCrossPool: false,
+                        upMarketSlug: btcMarket.slug,
+                        downMarketSlug: btcMarket.slug,
+                        downConditionId: btcConditionId,
+                        upAskPrice: 0,  // 不买 Up
+                        downAskPrice: btcDownAskPrice,
+                        upAskSize: 0,
+                        downAskSize: btcDownAskSize,
+                        combinedCost,
+                        profitPercent,
+                        maxShares,
+                        endDate: btcMarket.end_date_iso || '',
+                        upIsCheap: false,
+                        downIsCheap: true,
+                        isSamePoolRebalance: true,  // 标记为同池增持
+                        rebalanceAsset: 'btc',
+                        rebalanceSide: 'down',
+                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    
+                    Logger.info(`🔄 [同池] BTC Down 机会: 平均Up $${btcUpAvgPrice.toFixed(3)} + Down $${btcDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                }
+            }
+        }
+    }
+    
+    // BTC 池：如果持有 BTC Down 且 Down > Up，尝试买入 BTC Up
+    if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
+        const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
+        const btcUpAskPrice = btcBook.upBook.bestAsk;
+        const btcUpAskSize = btcBook.upBook.askSize;
+        
+        if (btcDownAvgPrice > 0 && btcUpAskPrice > 0) {
+            const combinedCost = btcUpAskPrice + btcDownAvgPrice;
+            
+            if (combinedCost < 1) {
+                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+                const neededShares = Math.abs(avgPrices.btc.imbalance);
+                const maxShares = Math.min(neededShares, btcUpAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                
+                if (maxShares >= 1) {
+                    opportunities.push({
+                        conditionId: btcConditionId,
+                        slug: btcMarket.slug,
+                        title: `${timeGroup} BTC 同池增持`,
+                        upToken: btcMarket.upToken!,
+                        downToken: btcMarket.downToken!,
+                        timeGroup,
+                        isCrossPool: false,
+                        upMarketSlug: btcMarket.slug,
+                        downMarketSlug: btcMarket.slug,
+                        downConditionId: btcConditionId,
+                        upAskPrice: btcUpAskPrice,
+                        downAskPrice: 0,  // 不买 Down
+                        upAskSize: btcUpAskSize,
+                        downAskSize: 0,
+                        combinedCost,
+                        profitPercent,
+                        maxShares,
+                        endDate: btcMarket.end_date_iso || '',
+                        upIsCheap: true,
+                        downIsCheap: false,
+                        isSamePoolRebalance: true,
+                        rebalanceAsset: 'btc',
+                        rebalanceSide: 'up',
+                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    
+                    Logger.info(`🔄 [同池] BTC Up 机会: Up $${btcUpAskPrice.toFixed(3)} + 平均Down $${btcDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                }
+            }
+        }
+    }
+    
+    // ETH 池：如果持有 ETH Down 且 Down > Up，尝试买入 ETH Up
+    if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
+        const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
+        const ethUpAskPrice = ethBook.upBook.bestAsk;
+        const ethUpAskSize = ethBook.upBook.askSize;
+        
+        if (ethDownAvgPrice > 0 && ethUpAskPrice > 0) {
+            const combinedCost = ethUpAskPrice + ethDownAvgPrice;
+            
+            if (combinedCost < 1) {
+                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+                const neededShares = Math.abs(avgPrices.eth.imbalance);
+                const maxShares = Math.min(neededShares, ethUpAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                
+                if (maxShares >= 1) {
+                    opportunities.push({
+                        conditionId: ethConditionId,
+                        slug: ethMarket.slug,
+                        title: `${timeGroup} ETH 同池增持`,
+                        upToken: ethMarket.upToken!,
+                        downToken: ethMarket.downToken!,
+                        timeGroup,
+                        isCrossPool: false,
+                        upMarketSlug: ethMarket.slug,
+                        downMarketSlug: ethMarket.slug,
+                        downConditionId: ethConditionId,
+                        upAskPrice: ethUpAskPrice,
+                        downAskPrice: 0,  // 不买 Down
+                        upAskSize: ethUpAskSize,
+                        downAskSize: 0,
+                        combinedCost,
+                        profitPercent,
+                        maxShares,
+                        endDate: ethMarket.end_date_iso || '',
+                        upIsCheap: true,
+                        downIsCheap: false,
+                        isSamePoolRebalance: true,
+                        rebalanceAsset: 'eth',
+                        rebalanceSide: 'up',
+                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    
+                    Logger.info(`🔄 [同池] ETH Up 机会: Up $${ethUpAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                }
+            }
+        }
+    }
+    
+    // ETH 池：如果持有 ETH Up 且 Up > Down，尝试买入 ETH Down
+    if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
+        const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
+        const ethDownAskPrice = ethBook.downBook.bestAsk;
+        const ethDownAskSize = ethBook.downBook.askSize;
+        
+        if (ethUpAvgPrice > 0 && ethDownAskPrice > 0) {
+            const combinedCost = ethUpAvgPrice + ethDownAskPrice;
+            
+            if (combinedCost < 1) {
+                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+                const neededShares = avgPrices.eth.imbalance;
+                const maxShares = Math.min(neededShares, ethDownAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100));
+                
+                if (maxShares >= 1) {
+                    opportunities.push({
+                        conditionId: ethConditionId,
+                        slug: ethMarket.slug,
+                        title: `${timeGroup} ETH 同池增持`,
+                        upToken: ethMarket.upToken!,
+                        downToken: ethMarket.downToken!,
+                        timeGroup,
+                        isCrossPool: false,
+                        upMarketSlug: ethMarket.slug,
+                        downMarketSlug: ethMarket.slug,
+                        downConditionId: ethConditionId,
+                        upAskPrice: 0,  // 不买 Up
+                        downAskPrice: ethDownAskPrice,
+                        upAskSize: 0,
+                        downAskSize: ethDownAskSize,
+                        combinedCost,
+                        profitPercent,
+                        maxShares,
+                        endDate: ethMarket.end_date_iso || '',
+                        upIsCheap: false,
+                        downIsCheap: true,
+                        isSamePoolRebalance: true,
+                        rebalanceAsset: 'eth',
+                        rebalanceSide: 'down',
+                    } as ArbitrageOpportunity & { isSamePoolRebalance: boolean; rebalanceAsset: string; rebalanceSide: string });
+                    
+                    Logger.info(`🔄 [同池] ETH Down 机会: 平均Up $${ethUpAvgPrice.toFixed(3)} + Down $${ethDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} | 需补 ${neededShares.toFixed(0)} shares`);
+                }
+            }
+        }
+    }
+    
+    return opportunities;
+};
+
+/**
  * 获取指定 timeGroup 的市场结束时间
  */
 export const getMarketEndTime = (timeGroup: TimeGroup): string | null => {
@@ -1013,6 +1240,7 @@ export default {
     initWebSocket,
     scanArbitrageOpportunities,
     generateHedgeOpportunities,
+    generateSamePoolOpportunities,
     printOpportunities,
     getWebSocketStatus,
     getCurrentPrices,

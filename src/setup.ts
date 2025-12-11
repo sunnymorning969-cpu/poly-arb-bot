@@ -100,6 +100,9 @@ const saveConfig = (config: Record<string, string>): void => {
         `BINANCE_CHECK_WINDOW_SEC=${config.BINANCE_CHECK_WINDOW_SEC || '60'}`,
         `BINANCE_MIN_VOLATILITY_PERCENT=${config.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'}`,
         '',
+        '# 同池增持策略（利用平均持仓价在同池内套利，减少止损亏损）',
+        `SAME_POOL_REBALANCE_ENABLED=${config.SAME_POOL_REBALANCE_ENABLED || 'false'}`,
+        '',
     ];
     
     fs.writeFileSync(ENV_FILE, lines.join('\n'), 'utf-8');
@@ -458,6 +461,30 @@ const main = async () => {
                 config.BINANCE_MIN_VOLATILITY_PERCENT = '0.1';
             }
         }
+    }
+    
+    // ===== 同池增持策略 =====
+    console.log('');
+    log.info('========== 同池增持策略 ==========');
+    log.info('在跨池套利的同时，利用平均持仓价的优势在同池内套利');
+    log.info('');
+    log.info('原理：');
+    log.info('  跨池套利时，你的 BTC Up 成本可能是 $0.70（因为配对 ETH Down $0.25）');
+    log.info('  虽然当前 BTC Up 市场价是 $0.85，但你的"成本优势"是 $0.70');
+    log.info('  如果 BTC Down 当前价 $0.28，则：$0.70 + $0.28 = $0.98 < 1');
+    log.info('  这就是一个同池套利机会！');
+    log.info('');
+    log.info('好处：');
+    log.info('  1. 额外套利机会（基于成本优势）');
+    log.info('  2. 逐步平衡仓位（减少单边风险）');
+    log.info('  3. 止损时亏损更少（已有部分对冲）');
+    log.info('  4. 完全平衡后该池无论结果都盈利');
+    console.log('');
+    
+    const currentSamePool = config.SAME_POOL_REBALANCE_ENABLED || 'false';
+    const samePoolEnabled = await question(`启用同池增持 [true/false] (当前: ${currentSamePool}): `);
+    if (samePoolEnabled === 'true' || samePoolEnabled === 'false') {
+        config.SAME_POOL_REBALANCE_ENABLED = samePoolEnabled;
     }
     
     // ===== 保存 =====

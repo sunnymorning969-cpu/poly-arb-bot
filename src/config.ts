@@ -132,6 +132,11 @@ export const CONFIG = {
     // 例如：BTC 15分钟涨跌幅 < 0.1% 就触发
     BINANCE_MIN_VOLATILITY_PERCENT: parseFloat(process.env.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'),
     
+    // ========== 同池增持策略 ==========
+    // 是否启用同池增持（在跨池套利的同时，利用平均持仓价在同池内套利）
+    // 目的：逐步平衡每个池内的 Up/Down，减少止损时的亏损
+    SAME_POOL_REBALANCE_ENABLED: process.env.SAME_POOL_REBALANCE_ENABLED === 'true',
+    
     // ========== 链配置 ==========
     CHAIN_ID: 137,
 };

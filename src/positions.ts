@@ -401,6 +401,72 @@ export const getPositionStats = (): {
 };
 
 /**
+ * 获取指定 timeGroup 的资产平均持仓价信息
+ * 用于同池增持策略
+ */
+export interface AssetAvgPrice {
+    asset: 'btc' | 'eth';
+    upShares: number;
+    downShares: number;
+    upCost: number;
+    downCost: number;
+    upAvgPrice: number;    // 平均买入价
+    downAvgPrice: number;  // 平均买入价
+    imbalance: number;     // Up - Down，正数表示 Up 多
+}
+
+export const getAssetAvgPrices = (timeGroup: TimeGroup): {
+    btc: AssetAvgPrice | null;
+    eth: AssetAvgPrice | null;
+} => {
+    const btcStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
+    const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
+    
+    for (const pos of positions.values()) {
+        // 判断是否属于指定 timeGroup
+        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+        const posTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        if (posTimeGroup !== timeGroup) continue;
+        
+        // 判断是 BTC 还是 ETH
+        const isBtc = pos.slug.toLowerCase().includes('btc');
+        const isEth = pos.slug.toLowerCase().includes('eth');
+        
+        if (isBtc) {
+            btcStats.upShares += pos.upShares;
+            btcStats.downShares += pos.downShares;
+            btcStats.upCost += pos.upCost;
+            btcStats.downCost += pos.downCost;
+        } else if (isEth) {
+            ethStats.upShares += pos.upShares;
+            ethStats.downShares += pos.downShares;
+            ethStats.upCost += pos.upCost;
+            ethStats.downCost += pos.downCost;
+        }
+    }
+    
+    const buildResult = (stats: typeof btcStats, asset: 'btc' | 'eth'): AssetAvgPrice | null => {
+        if (stats.upShares === 0 && stats.downShares === 0) return null;
+        
+        return {
+            asset,
+            upShares: stats.upShares,
+            downShares: stats.downShares,
+            upCost: stats.upCost,
+            downCost: stats.downCost,
+            upAvgPrice: stats.upShares > 0 ? stats.upCost / stats.upShares : 0,
+            downAvgPrice: stats.downShares > 0 ? stats.downCost / stats.downShares : 0,
+            imbalance: stats.upShares - stats.downShares,
+        };
+    };
+    
+    return {
+        btc: buildResult(btcStats, 'btc'),
+        eth: buildResult(ethStats, 'eth'),
+    };
+};
+
+/**
  * 设置结算回调（用于发送通知）
  */
 export const onSettlement = (callback: (result: SettlementResult) => void): void => {
@@ -838,6 +904,7 @@ export default {
     getImbalance,
     getAllPositions,
     getPositionStats,
+    getAssetAvgPrices,
     cleanExpiredPositions,
     checkAndSettleExpired,
     settlePosition,

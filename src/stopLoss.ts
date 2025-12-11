@@ -177,7 +177,7 @@ export const recordArbitrageOpportunity = (
         Logger.info(`⏱️ [${timeGroup}] 进入止损监控窗口，距离结束 ${secondsToEnd.toFixed(0)} 秒 (结束时间: ${endTimeStr})`);
     }
     
-    // 更新风险窗口统计
+    // 更新风险窗口统计（每次发现套利机会都计数，包括被跳过的）
     tracker.riskCheckCount++;
     if (combinedCost < CONFIG.STOP_LOSS_COST_THRESHOLD) {
         tracker.riskTriggerCount++;
