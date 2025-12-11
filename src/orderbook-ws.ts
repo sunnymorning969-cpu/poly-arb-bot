@@ -342,6 +342,31 @@ class OrderBookManager {
     }
     
     /**
+     * 强制重连（事件切换时使用）
+     * 保留订阅的 token，只重建连接
+     */
+    async forceReconnect(): Promise<void> {
+        Logger.info('🔄 强制重连 WebSocket...');
+        
+        // 保存当前订阅的 tokens
+        const tokens = Array.from(this.subscribedTokens);
+        
+        // 关闭旧连接（不清空 subscribedTokens）
+        if (this.ws) {
+            this.ws.removeAllListeners();  // 移除所有监听器，避免触发 scheduleReconnect
+            this.ws.close();
+            this.ws = null;
+        }
+        this.isConnected = false;
+        this.orderBooks.clear();  // 清空订单簿缓存
+        
+        // 重新连接
+        await this.connect();
+        
+        // 连接成功后，resubscribeAll 会自动被调用（在 connect 的 open 事件中）
+    }
+    
+    /**
      * 检查是否已连接
      */
     get connected(): boolean {

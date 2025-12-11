@@ -24,6 +24,7 @@ import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss } from './positions';
 import { notifyStopLoss } from './telegram';
 import { isHedgeCompleted, isHedging } from './hedging';
+import { isBtcVolatilityTooLow, getBtcChangeInfo } from './binance';
 
 // 止损状态追踪
 interface StopLossState {
@@ -226,6 +227,62 @@ export const recordArbitrageOpportunity = (
         
         Logger.warning(`🚨 止损条件满足 [${timeGroup}]: ${state.reason}`);
         Logger.warning(`   当前组合价格: $${combinedCost.toFixed(3)}`);
+    }
+};
+
+// 币安检查日志控制（每 5 秒打印一次）
+const binanceLogTime = new Map<TimeGroup, number>();
+const BINANCE_LOG_INTERVAL_MS = 5000;
+
+/**
+ * 检查币安波动率风控（同步，数据来自 WebSocket 实时推送）
+ * 如果 BTC 涨跌幅过小，触发对冲
+ * 在检查窗口内持续检查，一旦触发就立即对冲
+ */
+export const checkBinanceVolatility = (timeGroup: TimeGroup, endDate: string): void => {
+    if (!CONFIG.BINANCE_VOLATILITY_CHECK_ENABLED) return;
+    if (triggeredStopLoss.has(timeGroup)) return;
+    if (isHedgeCompleted(timeGroup) || isHedging(timeGroup)) return;
+    
+    const now = Date.now();
+    const endTime = new Date(endDate).getTime();
+    const secondsToEnd = (endTime - now) / 1000;
+    
+    // 只在指定时间窗口内检查
+    if (secondsToEnd <= 0 || secondsToEnd > CONFIG.BINANCE_CHECK_WINDOW_SEC) {
+        return;
+    }
+    
+    // 根据 timeGroup 确定 K 线间隔
+    const interval = timeGroup === '15min' ? '15m' : '1h';
+    
+    // 检查波动率（数据来自 WebSocket 实时缓存）
+    const isTooLow = isBtcVolatilityTooLow(interval);
+    const btcInfo = getBtcChangeInfo(interval);
+    
+    // 定期打印检查状态日志（每 5 秒一次）
+    const lastLog = binanceLogTime.get(timeGroup) || 0;
+    if (now - lastLog >= BINANCE_LOG_INTERVAL_MS) {
+        binanceLogTime.set(timeGroup, now);
+        const threshold = CONFIG.BINANCE_MIN_VOLATILITY_PERCENT;
+        Logger.info(`📊 [币安风控] ${timeGroup} 检查中 | BTC ${interval}: ${btcInfo} | 阈值: ±${threshold}% | 距离结束: ${secondsToEnd.toFixed(0)}秒`);
+    }
+    
+    if (isTooLow) {
+        // 触发止损
+        const state: StopLossState = {
+            timeGroup,
+            triggeredAt: now,
+            reason: `BTC ${interval} 波动率过低 (${btcInfo})，可能导致双输`,
+            upBid: 0,
+            downBid: 0,
+            combinedBid: 0,
+        };
+        triggeredStopLoss.set(timeGroup, state);
+        
+        Logger.warning(`🚨 [币安风控] 止损条件满足 [${timeGroup}]: ${state.reason}`);
+        Logger.warning(`   距离结束: ${secondsToEnd.toFixed(0)} 秒`);
+        Logger.warning(`   立即启动对冲保本模式！`);
     }
 };
 
@@ -526,11 +583,13 @@ export const clearTriggeredStopLoss = (timeGroup?: TimeGroup): void => {
         executedStopLoss.delete(timeGroup);
         priceTrackers.delete(timeGroup);
         tokenMapCache.delete(timeGroup);
+        binanceLogTime.delete(timeGroup);
     } else {
         triggeredStopLoss.clear();
         executedStopLoss.clear();
         priceTrackers.clear();
         tokenMapCache.clear();
+        binanceLogTime.clear();
     }
 };
 

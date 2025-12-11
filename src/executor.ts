@@ -503,10 +503,11 @@ export const executeArbitrage = async (
         downShares = targetShares;
         
     } else if (action === 'buy_up_only') {
-        // 对冲交易：100% 深度，无金额限制
+        // 对冲交易：使用 maxShares（已在 scanner 中计算好的目标数量）
         // 普通交易：90% 深度，有金额限制
         if (opportunity.isHedge) {
-            upShares = opportunity.upAskSize;  // 对冲：吃掉全部深度
+            // 对冲：使用预计算的 maxShares，不超过市场深度
+            upShares = Math.min(opportunity.maxShares, opportunity.upAskSize);
         } else {
             const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
@@ -523,10 +524,11 @@ export const executeArbitrage = async (
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
-        // 对冲交易：100% 深度，无金额限制
+        // 对冲交易：使用 maxShares（已在 scanner 中计算好的目标数量）
         // 普通交易：90% 深度，有金额限制
         if (opportunity.isHedge) {
-            downShares = opportunity.downAskSize;  // 对冲：吃掉全部深度
+            // 对冲：使用预计算的 maxShares，不超过市场深度
+            downShares = Math.min(opportunity.maxShares, opportunity.downAskSize);
         } else {
             const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;

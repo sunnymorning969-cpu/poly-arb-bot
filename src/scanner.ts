@@ -154,6 +154,14 @@ export const checkEventSwitch = async (): Promise<boolean> => {
         }
         
         Logger.info(`🔄 检测到事件切换，更新市场订阅...`);
+        
+        // ===== 关键：强制结算旧事件的所有仓位 =====
+        // 避免旧仓位被带到新事件
+        const { forceSettleByTimeGroup } = await import('./positions');
+        for (const timeGroup of oldTimeGroups) {
+            await forceSettleByTimeGroup(timeGroup);
+        }
+        
         // 清除止损记录和对冲状态（新事件开始）
         clearTriggeredStopLoss();
         for (const timeGroup of oldTimeGroups) {
@@ -404,8 +412,11 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
         // 只有 slug 变化时才重新订阅 WebSocket
         if (slugsChanged && tokenIds.length > 0) {
             Logger.success(`📊 找到 ${cachedMarkets.length} 个 BTC/ETH Up/Down 市场`);
+            // 更新订阅列表
             orderBookManager.clearStaleOrderBooks(tokenIds);
-            orderBookManager.subscribe(tokenIds);
+            tokenIds.forEach(id => orderBookManager.subscribe([id]));
+            // 强制重连 WebSocket（Polymarket 需要重新连接才能订阅新 token）
+            await orderBookManager.forceReconnect();
         }
         
         lastSlugs = currentSlugs;
@@ -839,7 +850,11 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
         // 第一次：计算目标补仓数量并启动对冲
         const summary = getGroupPositionSummary(timeGroup);
         
+        // 调试：打印仓位汇总
+        Logger.info(`🔍 [对冲调试] 仓位汇总: BTC Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)} | ETH Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)} | 总成本=$${summary.totalCost.toFixed(2)}`);
+        
         if (summary.totalCost === 0) {
+            Logger.warning(`🔍 [对冲调试] 没有持仓，跳过对冲`);
             return opportunities; // 没有持仓
         }
         
@@ -851,7 +866,23 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
             ethMarket.downBook.bestAsk
         );
         
+        // 打印对冲分析
+        const currentCombo = btcMarket.downBook.bestAsk + ethMarket.upBook.bestAsk;
+        const hedgeCombo = btcMarket.upBook.bestAsk + ethMarket.downBook.bestAsk;
+        
+        Logger.info(`🔍 [对冲分析]`);
+        Logger.info(`   原成本: $${summary.totalCost.toFixed(2)} | 仓位: BTC Down ${summary.btcDownShares.toFixed(0)} + ETH Up ${summary.ethUpShares.toFixed(0)}`);
+        Logger.info(`   当前组合价: $${currentCombo.toFixed(2)} | 对冲组合价: $${hedgeCombo.toFixed(2)}`);
+        Logger.info(`   ${hedgeInfo.breakEvenReason}`);
+        
+        if (!hedgeInfo.canBreakEven) {
+            Logger.warning(`⚠️ 对冲后仍有亏损，但远好于双输 100% 归零！`);
+            Logger.warning(`   预期亏损: $${hedgeInfo.expectedLoss.toFixed(0)} (${hedgeInfo.expectedLossPercent.toFixed(1)}%)`);
+            Logger.warning(`   对比双输: $${summary.totalCost.toFixed(0)} (100%)`);
+        }
+        
         if (!hedgeInfo.needHedge) {
+            Logger.warning(`🔍 [对冲调试] 不需要对冲（仓位已平衡）`);
             return opportunities; // 不需要对冲
         }
         
@@ -864,6 +895,7 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
         });
         
         Logger.warning(`   当前仓位: BTC Up=${summary.btcUpShares.toFixed(0)} Down=${summary.btcDownShares.toFixed(0)} | ETH Up=${summary.ethUpShares.toFixed(0)} Down=${summary.ethDownShares.toFixed(0)}`);
+        Logger.warning(`   预计对冲成本: $${hedgeInfo.hedgeCost.toFixed(2)}`);
     }
     
     // 获取剩余需要补的数量
@@ -961,6 +993,21 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     return opportunities;
 };
 
+/**
+ * 获取指定 timeGroup 的市场结束时间
+ */
+export const getMarketEndTime = (timeGroup: TimeGroup): string | null => {
+    for (const market of cachedMarkets) {
+        const is15min = market.slug.includes('15m') || market.slug.includes('15min');
+        const marketTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        
+        if (marketTimeGroup === timeGroup && market.end_date_iso) {
+            return market.end_date_iso;
+        }
+    }
+    return null;
+};
+
 export default {
     fetchCryptoMarkets,
     initWebSocket,
@@ -970,6 +1017,7 @@ export default {
     getWebSocketStatus,
     getCurrentPrices,
     getDebugInfo,
+    getMarketEndTime,
 };
 
 

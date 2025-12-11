@@ -1,10 +1,19 @@
 /**
  * 对冲补仓模块
  * 
- * 当触发风险阈值时，通过补仓实现保本：
- * - 原有仓位：BTC Up + ETH Down
- * - 补仓：BTC Down + ETH Up
- * - 目标：无论结果如何，收回 >= 总成本
+ * 当触发风险阈值时，通过补仓减少损失：
+ * 
+ * 核心公式：
+ *   亏损 = (原买入组合价格 - 对冲时组合价格) × shares
+ * 
+ * 例如：原买入 $0.85，对冲时 $0.65，亏损 = 0.20 × shares = 9.1%
+ * 
+ * 关键洞察：
+ *   1. 在原买入价对冲 = 保本（亏损 0%）
+ *   2. 组合价格跌得越多，亏得越多
+ *   3. 但对冲亏损 << 双输归零（100%亏损）
+ * 
+ * 所以对冲的意义是：把最坏情况从 100% 亏损降低到 ~10-20% 亏损
  */
 
 import Logger from './logger';
@@ -205,8 +214,14 @@ export const calculatePoolPayouts = (summary: GroupPositionSummary): {
 /**
  * 计算每个池子需要补仓多少（同池对冲）
  * 
- * 简单逻辑：让两边 shares 数量相等
- * 根据实际仓位结构决定补哪边
+ * 核心公式：亏损 = (原买入组合价格 - 对冲时组合价格) × shares
+ * 
+ * 例如：
+ *   - 原买入组合价格 $0.85，累计 1000 shares
+ *   - 对冲时组合价格 $0.65
+ *   - 亏损 = (0.85 - 0.65) × 1000 = $200 (9.1%)
+ * 
+ * 对冲意义：把双输 100% 亏损降低到 ~10-20% 亏损
  */
 export const calculateHedgeNeeded = (
     summary: GroupPositionSummary,
@@ -221,32 +236,69 @@ export const calculateHedgeNeeded = (
     ethUpNeeded: number;      // ETH 池需要补的 ETH Up
     ethDownNeeded: number;    // ETH 池需要补的 ETH Down
     hedgeCost: number;
+    canBreakEven: boolean;    // 是否可以保本
+    breakEvenReason: string;  // 保本计算说明
+    expectedLoss: number;     // 预期亏损金额
+    expectedLossPercent: number; // 预期亏损百分比
 } => {
-    // ========== BTC 池：让两边相等 ==========
+    // ========== 第一步：简单平衡策略（让两边 shares 相等）==========
     let btcUpNeeded = 0;
     let btcDownNeeded = 0;
+    let ethUpNeeded = 0;
+    let ethDownNeeded = 0;
+    
+    // BTC 池平衡
     if (summary.btcUpShares > summary.btcDownShares) {
-        // Up 多，需要补 Down
         btcDownNeeded = Math.ceil(summary.btcUpShares - summary.btcDownShares);
     } else if (summary.btcDownShares > summary.btcUpShares) {
-        // Down 多，需要补 Up
         btcUpNeeded = Math.ceil(summary.btcDownShares - summary.btcUpShares);
     }
     
-    // ========== ETH 池：让两边相等 ==========
-    let ethUpNeeded = 0;
-    let ethDownNeeded = 0;
+    // ETH 池平衡
     if (summary.ethUpShares > summary.ethDownShares) {
-        // Up 多，需要补 Down
         ethDownNeeded = Math.ceil(summary.ethUpShares - summary.ethDownShares);
     } else if (summary.ethDownShares > summary.ethUpShares) {
-        // Down 多，需要补 Up
         ethUpNeeded = Math.ceil(summary.ethDownShares - summary.ethUpShares);
     }
     
     const needHedge = btcUpNeeded > 0 || btcDownNeeded > 0 || ethUpNeeded > 0 || ethDownNeeded > 0;
     const hedgeCost = btcUpNeeded * btcUpPrice + btcDownNeeded * btcDownPrice + 
                       ethUpNeeded * ethUpPrice + ethDownNeeded * ethDownPrice;
+    
+    // ========== 第二步：计算预期亏损 ==========
+    // 对冲后的 shares 数量
+    const btcFinalShares = Math.max(summary.btcUpShares + btcUpNeeded, summary.btcDownShares + btcDownNeeded);
+    const ethFinalShares = Math.max(summary.ethUpShares + ethUpNeeded, summary.ethDownShares + ethDownNeeded);
+    
+    // 总成本（原成本 + 对冲成本）
+    const totalCost = summary.totalCost + hedgeCost;
+    
+    // 无论结果如何，收回 = btcFinalShares + ethFinalShares
+    const minReturn = btcFinalShares + ethFinalShares;
+    
+    // 预期亏损
+    const expectedLoss = Math.max(0, totalCost - minReturn);
+    const expectedLossPercent = totalCost > 0 ? (expectedLoss / totalCost * 100) : 0;
+    
+    let canBreakEven = expectedLoss <= 0;
+    let breakEvenReason = '';
+    
+    // 计算当前组合价格（用于参考）
+    const currentComboPrice = btcDownPrice + ethUpPrice;  // 原仓位组合
+    const hedgeComboPrice = btcUpPrice + ethDownPrice;    // 对冲组合
+    
+    // 计算原买入平均组合价格
+    const totalShares = Math.max(summary.btcDownShares, summary.ethUpShares);
+    const avgOrigPrice = totalShares > 0 ? summary.totalCost / totalShares : 0;
+    
+    if (canBreakEven) {
+        breakEvenReason = `✅ 可保本 | 总成本 $${totalCost.toFixed(0)} | 收回 $${minReturn.toFixed(0)}`;
+    } else {
+        // 使用简化公式解释
+        breakEvenReason = `⚠️ 亏损 $${expectedLoss.toFixed(0)} (${expectedLossPercent.toFixed(1)}%) | `;
+        breakEvenReason += `原组合价 ~$${avgOrigPrice.toFixed(2)} → 现组合价 $${currentComboPrice.toFixed(2)}`;
+        breakEvenReason += ` | 但对冲后亏损远小于双输 100%`;
+    }
     
     return {
         needHedge,
@@ -255,6 +307,10 @@ export const calculateHedgeNeeded = (
         ethUpNeeded,
         ethDownNeeded,
         hedgeCost,
+        canBreakEven,
+        breakEvenReason,
+        expectedLoss,
+        expectedLossPercent,
     };
 };
 

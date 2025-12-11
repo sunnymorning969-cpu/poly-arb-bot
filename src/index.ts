@@ -9,15 +9,16 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities, getMarketEndTime } from './scanner';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
-import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading } from './stopLoss';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility } from './stopLoss';
 import { executeSell } from './executor';
 import { getGlobalHedgeStats } from './hedging';
+import { initBinanceWs, isBinanceWsConnected } from './binance';
 
 // 统计数据
 interface Stats {
@@ -293,6 +294,9 @@ const mainLoop = async () => {
         return;
     }
     
+    // 初始化币安 WebSocket（用于波动率监控）
+    initBinanceWs();
+    
     // 获取初始余额
     const clobBalance = await getBalance();
     const usdcBalance = await getUSDCBalance();
@@ -343,6 +347,13 @@ const mainLoop = async () => {
             
             if (CONFIG.STOP_LOSS_MODE === 'hedge') {
                 for (const timeGroup of ['15min', '1hr'] as const) {
+                    // 获取当前市场的结束时间（用于币安波动率检查）
+                    const endTime = getMarketEndTime(timeGroup);
+                    if (endTime) {
+                        // 检查币安波动率风控
+                        checkBinanceVolatility(timeGroup, endTime);
+                    }
+                    
                     const pauseCheck = shouldPauseTrading(timeGroup);
                     
                     // 对冲已完成，等待事件结束，停止所有交易
@@ -424,7 +435,8 @@ const mainLoop = async () => {
                 const wsStatus = getWebSocketStatus();
                 const overallStats = getOverallStats();
                 
-                Logger.info(`⚡ ${scansPerSecond}/s | WS: ${wsStatus.connected ? '🟢' : '🔴'} ${wsStatus.cachedOrderBooks} books | 仓位: ${posStats.totalPositions} | 已结算: ${overallStats.totalSettled} | 总盈亏: $${overallStats.totalProfit.toFixed(2)}`);
+                const binanceStatus = isBinanceWsConnected() ? '🟢' : '🔴';
+                Logger.info(`⚡ ${scansPerSecond}/s | WS: ${wsStatus.connected ? '🟢' : '🔴'} ${wsStatus.cachedOrderBooks} books | 币安: ${binanceStatus} | 仓位: ${posStats.totalPositions} | 已结算: ${overallStats.totalSettled} | 总盈亏: $${overallStats.totalProfit.toFixed(2)}`);
                 lastLogTime = now;
                 scansSinceLog = 0;
             }

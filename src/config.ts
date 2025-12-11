@@ -116,6 +116,17 @@ export const CONFIG = {
     // 默认30次，避免样本太小误判
     STOP_LOSS_MIN_TRIGGER_COUNT: parseInt(process.env.STOP_LOSS_MIN_TRIGGER_COUNT || '30'),
     
+    // ========== 币安波动率风控 ==========
+    // 是否启用币安波动率检查（当 BTC 涨跌幅过小时触发对冲）
+    BINANCE_VOLATILITY_CHECK_ENABLED: process.env.BINANCE_VOLATILITY_CHECK_ENABLED === 'true',
+    
+    // 距离事件结束多少秒开始检查（默认60秒=最后1分钟）
+    BINANCE_CHECK_WINDOW_SEC: parseInt(process.env.BINANCE_CHECK_WINDOW_SEC || '60'),
+    
+    // 最小波动阈值（百分比），低于此值触发对冲（默认0.1%）
+    // 例如：BTC 15分钟涨跌幅 < 0.1% 就触发
+    BINANCE_MIN_VOLATILITY_PERCENT: parseFloat(process.env.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'),
+    
     // ========== 链配置 ==========
     CHAIN_ID: 137,
 };

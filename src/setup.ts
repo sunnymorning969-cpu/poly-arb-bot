@@ -89,11 +89,16 @@ const saveConfig = (config: Record<string, string>): void => {
         '',
         '# ========== 止损配置 ==========',
         `STOP_LOSS_ENABLED=${config.STOP_LOSS_ENABLED || 'true'}`,
-        `STOP_LOSS_MODE=${config.STOP_LOSS_MODE || 'hedge'}`,
+        `STOP_LOSS_MODE=${config.STOP_LOSS_MODE || 'sell'}`,
         `STOP_LOSS_WINDOW_SEC=${config.STOP_LOSS_WINDOW_SEC || '180'}`,
         `STOP_LOSS_COST_THRESHOLD=${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`,
         `STOP_LOSS_RISK_RATIO=${config.STOP_LOSS_RISK_RATIO || '60'}`,
         `STOP_LOSS_MIN_TRIGGER_COUNT=${config.STOP_LOSS_MIN_TRIGGER_COUNT || '100'}`,
+        '',
+        '# 币安波动率风控（可选，检测BTC涨跌幅过小时触发对冲）',
+        `BINANCE_VOLATILITY_CHECK_ENABLED=${config.BINANCE_VOLATILITY_CHECK_ENABLED || 'false'}`,
+        `BINANCE_CHECK_WINDOW_SEC=${config.BINANCE_CHECK_WINDOW_SEC || '60'}`,
+        `BINANCE_MIN_VOLATILITY_PERCENT=${config.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'}`,
         '',
     ];
     
@@ -329,20 +334,30 @@ const main = async () => {
         log.info('═══════════════════════════════════════════════════════');
         log.info('止损模式选择');
         log.info('');
-        log.info('  sell  - 平仓止损');
+        log.info('  sell  - 平仓止损（推荐）');
         log.info('          检测到风险后卖出仓位，接受部分亏损');
-        log.info('          优点：立即离场，不需要额外资金');
-        log.info('          缺点：会有部分亏损');
+        log.info('          ✅ 优点：不需要额外资金，释放资金用于下一轮');
+        log.info('          ⚠️ 缺点：如果市场反转回来，已卖无法获益');
         log.info('');
-        log.info('  hedge - 同池对冲（推荐）');
+        log.info('  hedge - 同池对冲');
         log.info('          检测到风险后，在各自池子内补仓使两边 shares 相等');
+        log.info('          ✅ 优点：收回金额确定（无论结果）');
+        log.info('          ⚠️ 缺点：需要额外资金');
         log.info('');
-        log.info('          原有仓位（跨池套利）：');
-        log.info('            BTC 池：大量 BTC Up，少量 BTC Down');
-        log.info('            ETH 池：少量 ETH Up，大量 ETH Down');
+        log.info('  ════════════════════════════════════════════════════════');
+        log.info('  ⚠️ 重要发现：平仓亏损 = 对冲亏损（金额完全相同）！');
         log.info('');
-        log.info('          对冲补仓（让两边相等）：');
-        log.info('            BTC 池：补 BTC Down 至 = BTC Up');
+        log.info('  公式：亏损 = (原买入组合价 - 当前组合价) × shares');
+        log.info('');
+        log.info('  例如：原买入 $0.85，当前 $0.65');
+        log.info('    → 平仓亏损 = $850 - $650 = $200');
+        log.info('    → 对冲亏损 = $2200 - $2000 = $200');
+        log.info('');
+        log.info('  既然亏损相同，推荐用 sell（平仓）：');
+        log.info('    - 不需要额外资金');
+        log.info('    - 释放资金可用于下一轮');
+        log.info('  ════════════════════════════════════════════════════════');
+        log.info('');
         log.info('            ETH 池：补 ETH Up 至 = ETH Down');
         log.info('');
         log.info('          结果分析：');
@@ -409,6 +424,40 @@ const main = async () => {
         } else if (!config.STOP_LOSS_MIN_TRIGGER_COUNT) {
             config.STOP_LOSS_MIN_TRIGGER_COUNT = '100';
         }
+        
+        // 币安波动率风控
+        console.log('');
+        log.info('========== 币安波动率风控 ==========');
+        log.info('当 BTC 涨跌幅过小时，结果难以预测，容易导致双输');
+        log.info('启用后：在事件即将结束时检查 BTC 涨跌幅，过小则触发对冲');
+        console.log('');
+        
+        const currentBinanceEnabled = config.BINANCE_VOLATILITY_CHECK_ENABLED || 'false';
+        const binanceEnabled = await question(`启用币安波动率检查 [true/false] (当前: ${currentBinanceEnabled}): `);
+        if (binanceEnabled === 'true' || binanceEnabled === 'false') {
+            config.BINANCE_VOLATILITY_CHECK_ENABLED = binanceEnabled;
+        }
+        
+        if (config.BINANCE_VOLATILITY_CHECK_ENABLED === 'true') {
+            const currentWindow = config.BINANCE_CHECK_WINDOW_SEC || '60';
+            log.info(`检查窗口：距离事件结束多少秒开始检查`);
+            const window = await question(`检查窗口秒数 (当前: ${currentWindow}): `);
+            if (window && !isNaN(parseInt(window))) {
+                config.BINANCE_CHECK_WINDOW_SEC = window;
+            } else if (!config.BINANCE_CHECK_WINDOW_SEC) {
+                config.BINANCE_CHECK_WINDOW_SEC = '60';
+            }
+            
+            const currentVolatility = config.BINANCE_MIN_VOLATILITY_PERCENT || '0.1';
+            log.info(`最小波动率：BTC 涨跌幅低于此值触发对冲`);
+            log.info(`例如：0.1 表示 BTC 15分钟涨跌幅 < 0.1% 时触发`);
+            const volatility = await question(`最小波动率% (当前: ${currentVolatility}): `);
+            if (volatility && !isNaN(parseFloat(volatility))) {
+                config.BINANCE_MIN_VOLATILITY_PERCENT = volatility;
+            } else if (!config.BINANCE_MIN_VOLATILITY_PERCENT) {
+                config.BINANCE_MIN_VOLATILITY_PERCENT = '0.1';
+            }
+        }
     }
     
     // ===== 保存 =====
@@ -445,11 +494,12 @@ const main = async () => {
     console.log(`     止损功能: ${config.STOP_LOSS_ENABLED === 'false' ? '❌ 关闭' : '✅ 开启'}`);
     if (config.STOP_LOSS_ENABLED !== 'false') {
         const mode = config.STOP_LOSS_MODE || 'hedge';
-        const modeLabel = mode === 'hedge' ? '🛡️ 同池对冲保本（推荐）' : '📉 平仓止损';
+        const modeLabel = mode === 'sell' ? '📉 平仓止损（推荐）' : '🛡️ 同池对冲';
         console.log(`     止损模式: ${modeLabel}`);
+        console.log(`       └─ 亏损公式: (原组合价 - 当前组合价) × shares`);
+        console.log(`       └─ 平仓和对冲亏损金额相同，平仓不需要额外资金`);
         if (mode === 'hedge') {
-            console.log(`       └─ 对冲逻辑: BTC池补Down至=Up，ETH池补Up至=Down`);
-            console.log(`       └─ 效果: 正常赚钱 / 触发对冲时锁定收回金额`);
+            console.log(`       └─ 对冲需要额外资金，但收回金额确定`);
         }
         console.log(`     监控窗口: 结束前 ${config.STOP_LOSS_WINDOW_SEC || '180'} 秒`);
         console.log(`     风险阈值: 组合价格 < $${config.STOP_LOSS_COST_THRESHOLD || '0.5'}`);

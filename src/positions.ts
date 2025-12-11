@@ -723,6 +723,54 @@ export const getOverallStats = (): {
     };
 };
 
+/**
+ * 强制清除指定 timeGroup 的所有仓位（事件切换时使用）
+ * 无论是否获取到结算结果，都清除仓位
+ */
+export const forceSettleByTimeGroup = async (timeGroup: TimeGroup): Promise<SettlementResult[]> => {
+    const settled: SettlementResult[] = [];
+    const modeTag = CONFIG.SIMULATION_MODE ? '[模拟]' : '[实盘]';
+    
+    for (const [conditionId, pos] of positions.entries()) {
+        // 判断仓位属于哪个 timeGroup
+        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+        const posTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        
+        if (posTimeGroup !== timeGroup) continue;
+        
+        // 尝试获取真实结果
+        const realOutcome = await fetchRealOutcome(pos.slug);
+        
+        if (realOutcome) {
+            // 有真实结果，正常结算
+            Logger.info(`${modeTag} 📊 ${pos.slug.slice(0, 25)} → ${realOutcome.toUpperCase()} 获胜`);
+            const result = settlePosition(pos, realOutcome);
+            settled.push(result);
+        } else {
+            // 无法获取结果，强制按当前价格估算（假设市场价格更高的一方获胜）
+            // 这样至少不会把旧仓位带到新事件
+            Logger.warning(`⚠️ [强制结算] ${pos.slug.slice(0, 25)} - 无法获取结果，按市场价格估算`);
+            
+            // 根据持仓比例估算（哪边多就算哪边赢，减少损失）
+            const estimatedOutcome: 'up' | 'down' = pos.upShares >= pos.downShares ? 'up' : 'down';
+            Logger.warning(`   → 估算结果: ${estimatedOutcome.toUpperCase()} (Up=${pos.upShares.toFixed(0)}, Down=${pos.downShares.toFixed(0)})`);
+            
+            const result = settlePosition(pos, estimatedOutcome);
+            settled.push(result);
+        }
+        
+        // 从内存和存储中删除仓位
+        positions.delete(conditionId);
+        deleteFromStorage(conditionId);
+    }
+    
+    if (settled.length > 0) {
+        Logger.info(`✅ [${timeGroup}] 强制结算完成: ${settled.length} 个仓位`);
+    }
+    
+    return settled;
+};
+
 export default {
     loadPositionsFromStorage,
     getPosition,
@@ -735,6 +783,7 @@ export default {
     settlePosition,
     onSettlement,
     getOverallStats,
+    forceSettleByTimeGroup,
 };
 
 
