@@ -442,45 +442,45 @@ export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | nu
             const outcomeNames = outcomes.map((o: string) => o.toLowerCase());
             if (!outcomeNames.includes('up') || !outcomeNames.includes('down')) continue;
             
-            // 调试日志：显示市场信息
-            Logger.info(`🔍 [调试] 市场: ${market.slug || market.question || 'unknown'}`);
-            Logger.info(`🔍 [调试] outcomes: ${JSON.stringify(outcomes)}`);
+            const upIndex = outcomeNames.indexOf('up');
+            const downIndex = outcomeNames.indexOf('down');
             
-            // 检查市场是否已结算
-            // Polymarket 通常用 outcomePrices 来表示结果：获胜方价格 = 1，失败方价格 = 0
+            // 方法1: 检查 closed/resolved 状态 + 价格
+            const isClosed = market.closed === true || market.resolved === true;
+            
+            // 方法2: 检查 winningOutcome 字段
+            if (market.winningOutcome) {
+                const winner = market.winningOutcome.toLowerCase();
+                if (winner === 'up' || winner === 'down') {
+                    Logger.info(`📊 ${slug.slice(0, 25)} → ${winner.toUpperCase()} 获胜 (winningOutcome)`);
+                    return winner as 'up' | 'down';
+                }
+            }
+            
+            // 方法3: 检查 outcomePrices（价格为 1 或 0 表示已结算）
             let outcomePrices = market.outcomePrices;
             if (typeof outcomePrices === 'string') {
                 try { outcomePrices = JSON.parse(outcomePrices); } catch { continue; }
             }
             
-            Logger.info(`🔍 [调试] outcomePrices: ${JSON.stringify(outcomePrices)}`);
-            
             if (outcomePrices && Array.isArray(outcomePrices) && outcomePrices.length >= 2) {
-                const upIndex = outcomeNames.indexOf('up');
-                const downIndex = outcomeNames.indexOf('down');
-                
                 const upPrice = parseFloat(outcomePrices[upIndex]) || 0;
                 const downPrice = parseFloat(outcomePrices[downIndex]) || 0;
                 
-                Logger.info(`🔍 [调试] upIndex=${upIndex}, downIndex=${downIndex}, upPrice=${upPrice}, downPrice=${downPrice}`);
-                
                 // 如果价格是 1 或 0，说明已结算
                 if (upPrice >= 0.99) {
-                    Logger.info(`📊 ${slug} 真实结果: UP 获胜 (价格: ${upPrice})`);
+                    Logger.info(`📊 ${slug.slice(0, 25)} → UP 获胜 (价格: ${upPrice.toFixed(2)})`);
                     return 'up';
                 } else if (downPrice >= 0.99) {
-                    Logger.info(`📊 ${slug} 真实结果: DOWN 获胜 (价格: ${downPrice})`);
+                    Logger.info(`📊 ${slug.slice(0, 25)} → DOWN 获胜 (价格: ${downPrice.toFixed(2)})`);
                     return 'down';
                 }
-            }
-            
-            // 也检查 winningOutcome 字段（如果有）
-            if (market.winningOutcome) {
-                const winner = market.winningOutcome.toLowerCase();
-                Logger.info(`🔍 [调试] winningOutcome: ${market.winningOutcome}`);
-                if (winner === 'up' || winner === 'down') {
-                    Logger.info(`📊 ${slug} 真实结果: ${winner.toUpperCase()} 获胜 (winningOutcome)`);
-                    return winner as 'up' | 'down';
+                
+                // 如果市场已关闭但价格还没更新到 1/0，用接近的价格判断
+                if (isClosed && (upPrice > 0.9 || downPrice > 0.9)) {
+                    const winner = upPrice > downPrice ? 'up' : 'down';
+                    Logger.info(`📊 ${slug.slice(0, 25)} → ${winner.toUpperCase()} 获胜 (closed + 价格推断)`);
+                    return winner;
                 }
             }
         }

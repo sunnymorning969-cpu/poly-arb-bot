@@ -82,11 +82,21 @@ const printConfig = () => {
     Logger.divider();
     Logger.info('🚨 止损配置:');
     Logger.info(`   止损开关: ${stopLossStatus.enabled ? '✅ 开启' : '❌ 关闭'}`);
+    Logger.info(`   止损模式: ${CONFIG.STOP_LOSS_MODE === 'sell' ? '📉 平仓' : '🛡️ 对冲'}`);
     if (stopLossStatus.enabled) {
         Logger.info(`   监控窗口: 结束前 ${stopLossStatus.windowSec} 秒`);
-        Logger.info(`   组合阈值: $${stopLossStatus.costThreshold}`);
+        Logger.info(`   组合阈值: $${stopLossStatus.costThreshold.toFixed(2)}`);
         Logger.info(`   风险比例: ≥${(stopLossStatus.riskRatio * 100).toFixed(0)}%`);
         Logger.info(`   最小次数: ≥${stopLossStatus.minTriggerCount} 次`);
+    }
+    Logger.divider();
+    Logger.info('📡 币安风控:');
+    if (CONFIG.BINANCE_VOLATILITY_CHECK_ENABLED) {
+        Logger.info(`   状态: ✅ 启用`);
+        Logger.info(`   检查窗口: 结束前 ${CONFIG.BINANCE_CHECK_WINDOW_SEC} 秒`);
+        Logger.info(`   波动阈值: ±${CONFIG.BINANCE_MIN_VOLATILITY_PERCENT}%`);
+    } else {
+        Logger.info(`   状态: ❌ 未启用`);
     }
     Logger.divider();
     Logger.info('💾 数据存储:');
