@@ -756,9 +756,9 @@ const runSettlementTask = async (): Promise<void> => {
             const result = settlePosition(pos, realOutcome);
             
             // 发送 Telegram 通知
-            for (const callback of settlementCallbacks) {
+            if (onSettlementCallback) {
                 try {
-                    callback(result);
+                    onSettlementCallback(result);
                 } catch (e) {
                     // 忽略回调错误
                 }
