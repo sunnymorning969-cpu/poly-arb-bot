@@ -331,10 +331,14 @@ const mainLoop = async () => {
     Logger.success('📊 WebSocket 数据就绪，开始监控...');
     Logger.divider();
     
-    // 结算回调只打印日志，不发送 Telegram（改为批量发送）
+    // 结算回调：打印日志并发送 Telegram 通知
     onSettlement(async (result: SettlementResult) => {
         const emoji = result.profit >= 0 ? '🎉' : '😢';
         Logger.arbitrage(`${emoji} 事件结算: ${result.position.slug.slice(0, 30)} | ${result.outcome.toUpperCase()} 获胜 | 盈亏: $${result.profit.toFixed(2)}`);
+        
+        // 发送 Telegram 通知
+        const overallStats = getOverallStats();
+        await notifySingleSettlement(result, overallStats);
     });
     
     // 发送 Telegram 启动通知
