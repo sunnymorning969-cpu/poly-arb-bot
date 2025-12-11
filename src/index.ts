@@ -345,15 +345,16 @@ const mainLoop = async () => {
             let opportunities: ArbitrageOpportunity[] = [];
             let shouldSkipArbitrage = false;
             
+            // 币安波动率检查（无论什么模式都要检查）
+            for (const timeGroup of ['15min', '1hr'] as const) {
+                const endTime = getMarketEndTime(timeGroup);
+                if (endTime) {
+                    checkBinanceVolatility(timeGroup, endTime);
+                }
+            }
+            
             if (CONFIG.STOP_LOSS_MODE === 'hedge') {
                 for (const timeGroup of ['15min', '1hr'] as const) {
-                    // 获取当前市场的结束时间（用于币安波动率检查）
-                    const endTime = getMarketEndTime(timeGroup);
-                    if (endTime) {
-                        // 检查币安波动率风控
-                        checkBinanceVolatility(timeGroup, endTime);
-                    }
-                    
                     const pauseCheck = shouldPauseTrading(timeGroup);
                     
                     // 对冲已完成，等待事件结束，停止所有交易
@@ -369,6 +370,16 @@ const mainLoop = async () => {
                         if (hedgeOpps.length > 0) {
                             opportunities = hedgeOpps;
                         }
+                    }
+                }
+            } else if (CONFIG.STOP_LOSS_MODE === 'sell') {
+                // sell 模式下，如果触发止损，执行平仓
+                for (const timeGroup of ['15min', '1hr'] as const) {
+                    const pauseCheck = shouldPauseTrading(timeGroup);
+                    if (pauseCheck.pause || pauseCheck.shouldHedge) {
+                        shouldSkipArbitrage = true;
+                        // 执行平仓止损
+                        await executeStopLoss(timeGroup);
                     }
                 }
             }
