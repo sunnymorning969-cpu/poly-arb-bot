@@ -102,6 +102,18 @@ const saveConfig = (config: Record<string, string>): void => {
         '',
         '# 同池增持策略（利用平均持仓价在同池内套利，减少止损亏损）',
         `SAME_POOL_REBALANCE_ENABLED=${config.SAME_POOL_REBALANCE_ENABLED || 'false'}`,
+        `SAME_POOL_SAFETY_MARGIN=${config.SAME_POOL_SAFETY_MARGIN || '2'}`,
+        '',
+        '# 紧急平衡（最后X秒强制平衡，允许小亏损换取仓位平衡）',
+        `EMERGENCY_BALANCE_ENABLED=${config.EMERGENCY_BALANCE_ENABLED || 'false'}`,
+        `EMERGENCY_BALANCE_SECONDS=${config.EMERGENCY_BALANCE_SECONDS || '20'}`,
+        `EMERGENCY_BALANCE_THRESHOLD=${config.EMERGENCY_BALANCE_THRESHOLD || '60'}`,
+        `EMERGENCY_BALANCE_MAX_LOSS=${config.EMERGENCY_BALANCE_MAX_LOSS || '3'}`,
+        '',
+        '# 极端不平衡提前平仓（平衡度<30%说明走势确定，提前平掉不平衡部分）',
+        `EXTREME_IMBALANCE_ENABLED=${config.EXTREME_IMBALANCE_ENABLED || 'false'}`,
+        `EXTREME_IMBALANCE_SECONDS=${config.EXTREME_IMBALANCE_SECONDS || '90'}`,
+        `EXTREME_IMBALANCE_THRESHOLD=${config.EXTREME_IMBALANCE_THRESHOLD || '30'}`,
         '',
     ];
     
@@ -465,26 +477,161 @@ const main = async () => {
     
     // ===== 同池增持策略 =====
     console.log('');
-    log.info('========== 同池增持策略 ==========');
-    log.info('在跨池套利的同时，利用平均持仓价的优势在同池内套利');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('同池增持策略 - 利用平均持仓价在同池内套利');
     log.info('');
     log.info('原理：');
-    log.info('  跨池套利时，你的 BTC Up 成本可能是 $0.70（因为配对 ETH Down $0.25）');
-    log.info('  虽然当前 BTC Up 市场价是 $0.85，但你的"成本优势"是 $0.70');
-    log.info('  如果 BTC Down 当前价 $0.28，则：$0.70 + $0.28 = $0.98 < 1');
-    log.info('  这就是一个同池套利机会！');
+    log.info('  跨池套利时，你的 BTC Up 成本可能是 $0.45（因为配对 ETH Down $0.49）');
+    log.info('  如果 BTC Down 当前价 $0.52，则：$0.45 + $0.52 = $0.97 < 1');
+    log.info('  这就是一个同池套利机会！买入 BTC Down 可以逐步平衡仓位');
     log.info('');
-    log.info('好处：');
-    log.info('  1. 额外套利机会（基于成本优势）');
-    log.info('  2. 逐步平衡仓位（减少单边风险）');
-    log.info('  3. 止损时亏损更少（已有部分对冲）');
-    log.info('  4. 完全平衡后该池无论结果都盈利');
+    log.info('目标：');
+    log.info('  让每个池的 Up/Down 数量相等 → 无论结果都盈利');
+    log.info('');
+    log.info('⚠️ 重要风险：');
+    log.info('  如果同池买入价格过高，会导致平均组合成本 > 1，即使 100% 平衡也亏损！');
+    log.info('  例如：Up 平均 $0.56 + Down 平均 $0.49 = $1.05 > 1 → 亏损');
+    log.info('═══════════════════════════════════════════════════════');
     console.log('');
     
     const currentSamePool = config.SAME_POOL_REBALANCE_ENABLED || 'false';
     const samePoolEnabled = await question(`启用同池增持 [true/false] (当前: ${currentSamePool}): `);
     if (samePoolEnabled === 'true' || samePoolEnabled === 'false') {
         config.SAME_POOL_REBALANCE_ENABLED = samePoolEnabled;
+    }
+    
+    if (config.SAME_POOL_REBALANCE_ENABLED === 'true') {
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('同池安全边际 - 确保平均组合成本 < 1');
+        log.info('');
+        log.info('  买入条件：平均持仓价 + 深度价格 < 1 - 安全边际');
+        log.info('');
+        log.info('  示例（安全边际 2%）：');
+        log.info('    持仓 Up 平均 $0.45');
+        log.info('    最高可接受 Down 价格 = 1 - 0.02 - 0.45 = $0.53');
+        log.info('    深度价格 $0.52 ✅ 可买   深度价格 $0.54 ❌ 跳过');
+        log.info('');
+        log.info('  建议：2-3%（确保最终组合成本低于 1）');
+        log.info('═══════════════════════════════════════════════════════');
+        const currentSafetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
+        const safetyMargin = await question(`同池安全边际 % (当前: ${currentSafetyMargin}): `);
+        if (safetyMargin && !isNaN(parseFloat(safetyMargin))) {
+            config.SAME_POOL_SAFETY_MARGIN = safetyMargin;
+        } else if (!config.SAME_POOL_SAFETY_MARGIN) {
+            config.SAME_POOL_SAFETY_MARGIN = '2';
+        }
+        
+        // ===== 紧急平衡 =====
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('紧急平衡 - 最后 X 秒强制平衡不平衡的仓位');
+        log.info('');
+        log.info('场景：');
+        log.info('  事件快结束时，平衡度只有 30%，正常模式找不到 <0.98 的机会');
+        log.info('  紧急平衡允许放宽限制，接受小亏损换取平衡');
+        log.info('');
+        log.info('触发条件：');
+        log.info('  1. 距离事件结束 < X 秒');
+        log.info('  2. 任一池平衡度 < Y%');
+        log.info('');
+        log.info('紧急模式下：');
+        log.info('  买入条件从 < 1-2% 放宽到 < 1+Z%');
+        log.info('  例如允许 5% 亏损：平均 $0.45 + 深度 $0.58 = $1.03 也能买');
+        log.info('═══════════════════════════════════════════════════════');
+        
+        const currentEmergencyEnabled = config.EMERGENCY_BALANCE_ENABLED || 'false';
+        const emergencyEnabled = await question(`启用紧急平衡 [true/false] (当前: ${currentEmergencyEnabled}): `);
+        if (emergencyEnabled === 'true' || emergencyEnabled === 'false') {
+            config.EMERGENCY_BALANCE_ENABLED = emergencyEnabled;
+        }
+        
+        if (config.EMERGENCY_BALANCE_ENABLED === 'true') {
+            const currentSeconds = config.EMERGENCY_BALANCE_SECONDS || '20';
+            const seconds = await question(`最后多少秒触发 (当前: ${currentSeconds}): `);
+            if (seconds && !isNaN(parseInt(seconds))) {
+                config.EMERGENCY_BALANCE_SECONDS = seconds;
+            } else if (!config.EMERGENCY_BALANCE_SECONDS) {
+                config.EMERGENCY_BALANCE_SECONDS = '20';
+            }
+            
+            const currentThreshold = config.EMERGENCY_BALANCE_THRESHOLD || '60';
+            const threshold = await question(`平衡度低于多少%触发 (当前: ${currentThreshold}): `);
+            if (threshold && !isNaN(parseFloat(threshold))) {
+                config.EMERGENCY_BALANCE_THRESHOLD = threshold;
+            } else if (!config.EMERGENCY_BALANCE_THRESHOLD) {
+                config.EMERGENCY_BALANCE_THRESHOLD = '60';
+            }
+            
+            console.log('');
+            log.info('═══════════════════════════════════════════════════════');
+            log.info('紧急平衡允许亏损 - 放宽组合价限制');
+            log.info('');
+            log.info('  正常模式：组合价 < 1 - 安全边际（如 < 0.98）');
+            log.info('  紧急模式：组合价 < 1 + 允许亏损（如 < 1.03）');
+            log.info('');
+            log.info('  跨池套利 MIN_ARBITRAGE = 6% → 组合成本 ≈ 0.94');
+            log.info('  正常同池 安全边际 = 2%     → 组合价 < 0.98');
+            log.info('');
+            log.info('  紧急模式建议：');
+            log.info('    3% - 保守（放宽到 < 1.03，最多亏 3%）');
+            log.info('    5% - 激进（放宽到 < 1.05，最多亏 5%）');
+            log.info('');
+            log.info('  ⚠️ 风险：设置过高会导致紧急买入带来更大亏损');
+            log.info('═══════════════════════════════════════════════════════');
+            const currentMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '3';
+            const maxLoss = await question(`紧急平衡允许亏损 % (当前: ${currentMaxLoss}): `);
+            if (maxLoss && !isNaN(parseFloat(maxLoss))) {
+                config.EMERGENCY_BALANCE_MAX_LOSS = maxLoss;
+            } else if (!config.EMERGENCY_BALANCE_MAX_LOSS) {
+                config.EMERGENCY_BALANCE_MAX_LOSS = '3';
+            }
+        }
+        
+        // ===== 极端不平衡提前平仓 =====
+        console.log('');
+        log.info('═══════════════════════════════════════════════════════');
+        log.info('极端不平衡提前平仓 - 走势确定时的特殊策略');
+        log.info('');
+        log.info('场景：');
+        log.info('  平衡度 < 30%，说明 BTC/ETH 一直在单向走，没有波动');
+        log.info('  走势非常确定 → BTC/ETH 大概率同向（80%一致）');
+        log.info('');
+        log.info('策略：');
+        log.info('  不再紧急补仓，而是平掉不平衡部分，保留平衡部分');
+        log.info('  结果出来后，平衡部分的盈利可以抵消平仓亏损');
+        log.info('');
+        log.info('示例：');
+        log.info('  BTC: Up 1000, Down 300 (平衡 30%) → BTC 一直涨');
+        log.info('  ETH: Up 300, Down 1000 (平衡 30%) → ETH 一直跌？不对！');
+        log.info('  如果 BTC/ETH 同向，ETH 也涨 → ETH Up 会赢');
+        log.info('  操作：平掉 BTC Up 700 + ETH Down 700');
+        log.info('  保留：BTC 300/300 平衡 + ETH 300/300 平衡');
+        log.info('═══════════════════════════════════════════════════════');
+        
+        const currentExtremeEnabled = config.EXTREME_IMBALANCE_ENABLED || 'false';
+        const extremeEnabled = await question(`启用极端不平衡提前平仓 [true/false] (当前: ${currentExtremeEnabled}): `);
+        if (extremeEnabled === 'true' || extremeEnabled === 'false') {
+            config.EXTREME_IMBALANCE_ENABLED = extremeEnabled;
+        }
+        
+        if (config.EXTREME_IMBALANCE_ENABLED === 'true') {
+            const currentExtremeSeconds = config.EXTREME_IMBALANCE_SECONDS || '90';
+            const extremeSeconds = await question(`最后多少秒检测 (当前: ${currentExtremeSeconds}): `);
+            if (extremeSeconds && !isNaN(parseInt(extremeSeconds))) {
+                config.EXTREME_IMBALANCE_SECONDS = extremeSeconds;
+            } else if (!config.EXTREME_IMBALANCE_SECONDS) {
+                config.EXTREME_IMBALANCE_SECONDS = '90';
+            }
+            
+            const currentExtremeThreshold = config.EXTREME_IMBALANCE_THRESHOLD || '30';
+            const extremeThreshold = await question(`平衡度低于多少%触发 (当前: ${currentExtremeThreshold}): `);
+            if (extremeThreshold && !isNaN(parseFloat(extremeThreshold))) {
+                config.EXTREME_IMBALANCE_THRESHOLD = extremeThreshold;
+            } else if (!config.EXTREME_IMBALANCE_THRESHOLD) {
+                config.EXTREME_IMBALANCE_THRESHOLD = '30';
+            }
+        }
     }
     
     // ===== 保存 =====
@@ -533,6 +680,28 @@ const main = async () => {
         const ratioVal = parseFloat(config.STOP_LOSS_RISK_RATIO || '60');
         const ratioPercent = ratioVal > 1 ? ratioVal : ratioVal * 100;
         console.log(`     触发条件: 比例 ≥${ratioPercent.toFixed(0)}% 且 次数 ≥${config.STOP_LOSS_MIN_TRIGGER_COUNT || '100'}`);
+    }
+    console.log('');
+    console.log(`  🔄 同池增持策略:`);
+    console.log(`     同池增持: ${config.SAME_POOL_REBALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
+    if (config.SAME_POOL_REBALANCE_ENABLED === 'true') {
+        const safetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
+        console.log(`     安全边际: ${safetyMargin}%（组合价 < ${(1 - parseFloat(safetyMargin)/100).toFixed(2)} 才买入）`);
+        console.log(`     紧急平衡: ${config.EMERGENCY_BALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
+        if (config.EMERGENCY_BALANCE_ENABLED === 'true') {
+            const emergencySec = config.EMERGENCY_BALANCE_SECONDS || '20';
+            const emergencyThreshold = config.EMERGENCY_BALANCE_THRESHOLD || '60';
+            const emergencyMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '3';
+            console.log(`       └─ 触发: 最后 ${emergencySec}秒 + 平衡度 < ${emergencyThreshold}%`);
+            console.log(`       └─ 放宽: 组合价 < ${(1 + parseFloat(emergencyMaxLoss)/100).toFixed(2)}（允许 ${emergencyMaxLoss}% 亏损）`);
+        }
+        console.log(`     极端不平衡: ${config.EXTREME_IMBALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
+        if (config.EXTREME_IMBALANCE_ENABLED === 'true') {
+            const extremeSec = config.EXTREME_IMBALANCE_SECONDS || '90';
+            const extremeThreshold = config.EXTREME_IMBALANCE_THRESHOLD || '30';
+            console.log(`       └─ 触发: 最后 ${extremeSec}秒 + 平衡度 < ${extremeThreshold}%`);
+            console.log(`       └─ 策略: 平掉不平衡部分，保留平衡部分等结算`);
+        }
     }
     console.log('');
     

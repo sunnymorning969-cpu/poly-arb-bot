@@ -8,6 +8,12 @@
 import WebSocket from 'ws';
 import Logger from './logger';
 
+// 订单簿层级
+export interface OrderBookLevel {
+    price: number;
+    size: number;
+}
+
 // 订单簿数据
 export interface OrderBookData {
     tokenId: string;
@@ -16,6 +22,8 @@ export interface OrderBookData {
     bestBid: number;
     bestBidSize: number;
     timestamp: number;
+    asks: OrderBookLevel[];  // 所有卖单层级（按价格升序）
+    bids: OrderBookLevel[];  // 所有买单层级（按价格降序）
 }
 
 // WebSocket 消息类型
@@ -181,6 +189,15 @@ class OrderBookManager {
             }
         }
         
+        // 构建排序后的层级数组
+        const sortedAsks: OrderBookLevel[] = Array.from(asksByPrice.entries())
+            .map(([price, size]) => ({ price, size }))
+            .sort((a, b) => a.price - b.price);  // 升序（最低价在前）
+        
+        const sortedBids: OrderBookLevel[] = Array.from(bidsByPrice.entries())
+            .map(([price, size]) => ({ price, size }))
+            .sort((a, b) => b.price - a.price);  // 降序（最高价在前）
+        
         const data: OrderBookData = {
             tokenId,
             bestAsk: bestAsk === Infinity ? 1 : bestAsk,
@@ -188,6 +205,8 @@ class OrderBookManager {
             bestBid,
             bestBidSize,
             timestamp: Date.now(),
+            asks: sortedAsks,
+            bids: sortedBids,
         };
         
         this.orderBooks.set(tokenId, data);

@@ -12,7 +12,7 @@ import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup, getAssetAvgPrices } from './positions';
-import { updateTokenMap, clearTriggeredStopLoss, printEventSummary } from './stopLoss';
+import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, clearExtremeImbalance, setEmergencyMode, isInEmergencyMode, clearEmergencyMode } from './stopLoss';
 import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog, canExecuteHedge, getRemainingHedge } from './hedging';
 
 // 扫描级别的冷却记录（防止重复检测）
@@ -166,8 +166,10 @@ export const checkEventSwitch = async (): Promise<boolean> => {
             await forceSettleByTimeGroup(timeGroup);
         }
         
-        // 清除止损记录和对冲状态（新事件开始）
+        // 清除止损记录、极端不平衡记录、紧急模式和对冲状态（新事件开始）
         clearTriggeredStopLoss();
+        clearExtremeImbalance();
+        clearEmergencyMode();
         for (const timeGroup of oldTimeGroups) {
             stopHedging(timeGroup);
         }
@@ -996,14 +998,58 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
 // 同池诊断日志冷却
 let lastSamePoolDiagTime = 0;
 const SAME_POOL_DIAG_COOLDOWN = 30000;  // 30秒打印一次诊断
+let lastEmergencyLogTime = 0;
+
+/**
+ * 计算平衡度（0-100%）- 导出供主循环使用
+ */
+export const calculateBalancePercent = (upShares: number, downShares: number): number => {
+    if (upShares === 0 && downShares === 0) return 100;  // 没有仓位算 100%
+    if (upShares === 0 || downShares === 0) return 0;
+    return Math.min(upShares, downShares) / Math.max(upShares, downShares) * 100;
+};
+
+/**
+ * 检查是否需要紧急平衡（导出供主循环使用）
+ */
+export const checkEmergencyBalance = (
+    timeGroup: TimeGroup,
+    btcBalance: number,
+    ethBalance: number,
+    endDate: string
+): { isEmergency: boolean; maxLossPercent: number } => {
+    if (!CONFIG.EMERGENCY_BALANCE_ENABLED) {
+        return { isEmergency: false, maxLossPercent: 0 };
+    }
+    
+    // 计算剩余时间
+    const endTime = new Date(endDate).getTime();
+    const now = Date.now();
+    const remainingSeconds = Math.max(0, (endTime - now) / 1000);
+    
+    // 检查是否在紧急时间窗口内
+    if (remainingSeconds > CONFIG.EMERGENCY_BALANCE_SECONDS) {
+        return { isEmergency: false, maxLossPercent: 0 };
+    }
+    
+    // 检查平衡度是否低于阈值
+    const minBalance = Math.min(btcBalance, ethBalance);
+    if (minBalance >= CONFIG.EMERGENCY_BALANCE_THRESHOLD) {
+        return { isEmergency: false, maxLossPercent: 0 };
+    }
+    
+    return { 
+        isEmergency: true, 
+        maxLossPercent: CONFIG.EMERGENCY_BALANCE_MAX_LOSS 
+    };
+};
 
 /**
  * 生成同池增持机会（基于平均持仓价）
  * 
  * 策略：
- * - 如果持有 BTC Up，检查 BTC Up 平均持仓价 + BTC Down 当前价 < 1
- * - 如果持有 ETH Down，检查 ETH Up 当前价 + ETH Down 平均持仓价 < 1
- * - 买入数量不超过需要平衡的数量
+ * - 正常模式：组合价 < 1 - safetyMargin
+ * - 紧急模式：组合价 < 1 + maxLoss（优先平衡最不平衡的池子）
  */
 export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOpportunity[] => {
     if (!CONFIG.SAME_POOL_REBALANCE_ENABLED) return [];
@@ -1011,16 +1057,20 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const opportunities: ArbitrageOpportunity[] = [];
     const avgPrices = getAssetAvgPrices(timeGroup);
     
+    // 计算当前平衡度
+    const btcBalance = avgPrices.btc ? calculateBalancePercent(avgPrices.btc.upShares, avgPrices.btc.downShares) : 100;
+    const ethBalance = avgPrices.eth ? calculateBalancePercent(avgPrices.eth.upShares, avgPrices.eth.downShares) : 100;
+    
     // 诊断日志（每30秒打印一次）
     const now = Date.now();
     const shouldLog = now - lastSamePoolDiagTime >= SAME_POOL_DIAG_COOLDOWN;
     if (shouldLog) {
         lastSamePoolDiagTime = now;
         if (avgPrices.btc) {
-            Logger.info(`📊 [同池诊断] BTC: Up=${avgPrices.btc.upShares.toFixed(0)}@$${avgPrices.btc.upAvgPrice.toFixed(3)} Down=${avgPrices.btc.downShares.toFixed(0)}@$${avgPrices.btc.downAvgPrice.toFixed(3)} imbalance=${avgPrices.btc.imbalance.toFixed(0)}`);
+            Logger.info(`📊 [同池诊断] BTC: Up=${avgPrices.btc.upShares.toFixed(0)}@$${avgPrices.btc.upAvgPrice.toFixed(3)} Down=${avgPrices.btc.downShares.toFixed(0)}@$${avgPrices.btc.downAvgPrice.toFixed(3)} imbalance=${avgPrices.btc.imbalance.toFixed(0)} 平衡${btcBalance.toFixed(0)}%`);
         }
         if (avgPrices.eth) {
-            Logger.info(`📊 [同池诊断] ETH: Up=${avgPrices.eth.upShares.toFixed(0)}@$${avgPrices.eth.upAvgPrice.toFixed(3)} Down=${avgPrices.eth.downShares.toFixed(0)}@$${avgPrices.eth.downAvgPrice.toFixed(3)} imbalance=${avgPrices.eth.imbalance.toFixed(0)}`);
+            Logger.info(`📊 [同池诊断] ETH: Up=${avgPrices.eth.upShares.toFixed(0)}@$${avgPrices.eth.upAvgPrice.toFixed(3)} Down=${avgPrices.eth.downShares.toFixed(0)}@$${avgPrices.eth.downAvgPrice.toFixed(3)} imbalance=${avgPrices.eth.imbalance.toFixed(0)} 平衡${ethBalance.toFixed(0)}%`);
         }
     }
     
@@ -1048,60 +1098,98 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     
     if (!btcMarketData || !ethMarketData) return opportunities;
     
+    // 获取结束时间（用于紧急模式检测）
+    const endDate = btcMarketData.market.end_date_iso || '';
+    
+    // 检查是否需要紧急平衡
+    const emergency = checkEmergencyBalance(timeGroup, btcBalance, ethBalance, endDate);
+    
+    // 计算安全边际（正常模式）
+    const safetyMargin = CONFIG.SAME_POOL_SAFETY_MARGIN / 100;  // 转为小数
+    
+    // 紧急模式的设置和日志现在由主循环处理
+    
+    // 决定优先平衡哪个池（紧急模式下优先平衡最不平衡的）
+    const btcPriority = emergency.isEmergency && btcBalance < ethBalance;
+    const ethPriority = emergency.isEmergency && ethBalance < btcBalance;
+    
     // BTC 池：如果持有 BTC Up 且 Up > Down，尝试买入 BTC Down
     if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
-        const btcDownAskPrice = btcMarketData.downBook.bestAsk;
-        const btcDownAskSize = btcMarketData.downBook.bestAskSize;
+        const asks = btcMarketData.downBook.asks || [];
         
-        if (btcUpAvgPrice > 0 && btcDownAskPrice > 0) {
-            const combinedCost = btcUpAvgPrice + btcDownAskPrice;
-            
-            // 诊断日志
-            if (shouldLog) {
-                Logger.info(`   BTC同池: 平均Up $${btcUpAvgPrice.toFixed(3)} + 当前Down $${btcDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} ${combinedCost < 1 ? '✅可套' : '❌>=1'}`);
+        // 计算最高可接受价格
+        // 正常模式：avgPrice + askPrice < 1 - safetyMargin
+        // 紧急模式：avgPrice + askPrice < 1 + maxLoss
+        let maxPriceLevel: number;
+        if (emergency.isEmergency) {
+            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - btcUpAvgPrice;
+        } else {
+            maxPriceLevel = 1 - safetyMargin - btcUpAvgPrice;
+        }
+        
+        // 计算所有满足条件的层级的总深度
+        let totalAvailableSize = 0;
+        let weightedAvgPrice = 0;
+        
+        for (const level of asks) {
+            if (level.price < maxPriceLevel) {
+                totalAvailableSize += level.size;
+                weightedAvgPrice += level.price * level.size;
             }
+        }
+        
+        // 计算加权平均价格
+        const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
+        const combinedCost = btcUpAvgPrice + avgAskPrice;
+        
+        // 诊断日志
+        if (shouldLog && btcUpAvgPrice > 0) {
+            const levelsCount = asks.filter(l => l.price < maxPriceLevel).length;
+            const modeTag = emergency.isEmergency ? '🚨紧急' : '正常';
+            Logger.info(`   BTC同池[${modeTag}]: 平均Up $${btcUpAvgPrice.toFixed(3)} + 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
+        }
+        
+        if (totalAvailableSize >= 1 && btcUpAvgPrice > 0) {
+            const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+            const neededShares = avgPrices.btc.imbalance;  // 需要平衡的数量
+            const maxShares = Math.min(neededShares, totalAvailableSize);  // 吃掉所有满足条件的深度
             
-            if (combinedCost < 1) {
-                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
-                const neededShares = avgPrices.btc.imbalance;  // 需要平衡的数量
-                const maxShares = Math.min(neededShares, btcDownAskSize);  // 同池增持：吃掉全部深度
+            if (maxShares >= 1) {
+                const defaultAnalysis = {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: avgPrices.btc.imbalance,
+                    needMoreUp: false,
+                    needMoreDown: true,
+                    predictedAvgCost: combinedCost,
+                    predictedProfit: profitPercent,
+                    worthBuying: true,
+                };
                 
-                if (maxShares >= 1) {
-                    const defaultAnalysis = {
-                        hasPosition: true,
-                        currentAvgCost: 0,
-                        currentProfit: 0,
-                        imbalance: avgPrices.btc.imbalance,
-                        needMoreUp: false,
-                        needMoreDown: true,
-                        predictedAvgCost: combinedCost,
-                        predictedProfit: profitPercent,
-                        worthBuying: true,
-                    };
-                    
-                    opportunities.push({
-                        conditionId: btcMarketData.conditionId,
-                        slug: btcMarketData.market.slug,
-                        title: `${timeGroup} BTC 同池增持`,
-                        upToken: btcMarketData.upToken,
-                        downToken: btcMarketData.downToken,
-                        timeGroup,
-                        isCrossPool: false,
-                        upMarketSlug: btcMarketData.market.slug,
-                        downMarketSlug: btcMarketData.market.slug,
-                        downConditionId: btcMarketData.conditionId,
-                        upAskPrice: 0,  // 不买 Up
-                        downAskPrice: btcDownAskPrice,
-                        upAskSize: 0,
-                        downAskSize: btcDownAskSize,
-                        combinedCost,
-                        profitPercent,
-                        maxShares,
-                        endDate: btcMarketData.market.end_date_iso || '',
-                        upIsCheap: false,
-                        downIsCheap: true,
-                        priority: 5,  // 同池增持优先级
+                opportunities.push({
+                    conditionId: btcMarketData.conditionId,
+                    slug: btcMarketData.market.slug,
+                    title: `${timeGroup} BTC 同池增持`,
+                    upToken: btcMarketData.upToken,
+                    downToken: btcMarketData.downToken,
+                    timeGroup,
+                    isCrossPool: false,
+                    upMarketSlug: btcMarketData.market.slug,
+                    downMarketSlug: btcMarketData.market.slug,
+                    downConditionId: btcMarketData.conditionId,
+                    upAskPrice: 0,  // 不买 Up
+                    downAskPrice: avgAskPrice,  // 使用加权平均价格
+                    upAskSize: 0,
+                    downAskSize: totalAvailableSize,  // 所有满足条件的深度
+                    combinedCost,
+                    profitPercent,
+                    maxShares,
+                    endDate: btcMarketData.market.end_date_iso || '',
+                    upIsCheap: false,
+                    downIsCheap: true,
+                    priority: 5,  // 同池增持优先级
                         tradingAction: 'buy_down_only',  // 只买 Down
                         groupAnalysis: defaultAnalysis,
                         eventAnalysis: defaultAnalysis,
@@ -1117,53 +1205,71 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // BTC 池：如果持有 BTC Down 且 Down > Up，尝试买入 BTC Up
     if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
-        const btcUpAskPrice = btcMarketData.upBook.bestAsk;
-        const btcUpAskSize = btcMarketData.upBook.bestAskSize;
+        const asks = btcMarketData.upBook.asks || [];
         
-        if (btcDownAvgPrice > 0 && btcUpAskPrice > 0) {
-            const combinedCost = btcUpAskPrice + btcDownAvgPrice;
+        // 计算最高可接受价格
+        let maxPriceLevel: number;
+        if (emergency.isEmergency) {
+            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - btcDownAvgPrice;
+        } else {
+            maxPriceLevel = 1 - safetyMargin - btcDownAvgPrice;
+        }
+        
+        // 计算所有满足条件的层级的总深度
+        let totalAvailableSize = 0;
+        let weightedAvgPrice = 0;
+        
+        for (const level of asks) {
+            if (level.price < maxPriceLevel) {
+                totalAvailableSize += level.size;
+                weightedAvgPrice += level.price * level.size;
+            }
+        }
+        
+        const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
+        const combinedCost = avgAskPrice + btcDownAvgPrice;
+        
+        if (totalAvailableSize >= 1 && btcDownAvgPrice > 0) {
+            const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+            const neededShares = Math.abs(avgPrices.btc.imbalance);
+            const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (combinedCost < 1) {
-                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
-                const neededShares = Math.abs(avgPrices.btc.imbalance);
-                const maxShares = Math.min(neededShares, btcUpAskSize);  // 同池增持：吃掉全部深度
+            if (maxShares >= 1) {
+                const defaultAnalysis = {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: avgPrices.btc.imbalance,
+                    needMoreUp: true,
+                    needMoreDown: false,
+                    predictedAvgCost: combinedCost,
+                    predictedProfit: profitPercent,
+                    worthBuying: true,
+                };
                 
-                if (maxShares >= 1) {
-                    const defaultAnalysis = {
-                        hasPosition: true,
-                        currentAvgCost: 0,
-                        currentProfit: 0,
-                        imbalance: avgPrices.btc.imbalance,
-                        needMoreUp: true,
-                        needMoreDown: false,
-                        predictedAvgCost: combinedCost,
-                        predictedProfit: profitPercent,
-                        worthBuying: true,
-                    };
-                    
-                    opportunities.push({
-                        conditionId: btcMarketData.conditionId,
-                        slug: btcMarketData.market.slug,
-                        title: `${timeGroup} BTC 同池增持`,
-                        upToken: btcMarketData.upToken,
-                        downToken: btcMarketData.downToken,
-                        timeGroup,
-                        isCrossPool: false,
-                        upMarketSlug: btcMarketData.market.slug,
-                        downMarketSlug: btcMarketData.market.slug,
-                        downConditionId: btcMarketData.conditionId,
-                        upAskPrice: btcUpAskPrice,
-                        downAskPrice: 0,  // 不买 Down
-                        upAskSize: btcUpAskSize,
-                        downAskSize: 0,
-                        combinedCost,
-                        profitPercent,
-                        maxShares,
-                        endDate: btcMarketData.market.end_date_iso || '',
-                        upIsCheap: true,
-                        downIsCheap: false,
-                        priority: 5,
-                        tradingAction: 'buy_up_only',  // 只买 Up
+                opportunities.push({
+                    conditionId: btcMarketData.conditionId,
+                    slug: btcMarketData.market.slug,
+                    title: `${timeGroup} BTC 同池增持`,
+                    upToken: btcMarketData.upToken,
+                    downToken: btcMarketData.downToken,
+                    timeGroup,
+                    isCrossPool: false,
+                    upMarketSlug: btcMarketData.market.slug,
+                    downMarketSlug: btcMarketData.market.slug,
+                    downConditionId: btcMarketData.conditionId,
+                    upAskPrice: avgAskPrice,
+                    downAskPrice: 0,  // 不买 Down
+                    upAskSize: totalAvailableSize,
+                    downAskSize: 0,
+                    combinedCost,
+                    profitPercent,
+                    maxShares,
+                    endDate: btcMarketData.market.end_date_iso || '',
+                    upIsCheap: true,
+                    downIsCheap: false,
+                    priority: 5,
+                    tradingAction: 'buy_up_only',  // 只买 Up
                         groupAnalysis: defaultAnalysis,
                         eventAnalysis: defaultAnalysis,
                         isSamePoolRebalance: true,
@@ -1178,65 +1284,84 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：如果持有 ETH Down 且 Down > Up，尝试买入 ETH Up
     if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
-        const ethUpAskPrice = ethMarketData.upBook.bestAsk;
-        const ethUpAskSize = ethMarketData.upBook.bestAskSize;
+        const asks = ethMarketData.upBook.asks || [];
         
-        if (ethDownAvgPrice > 0 && ethUpAskPrice > 0) {
-            const combinedCost = ethUpAskPrice + ethDownAvgPrice;
-            
-            // 诊断日志
-            if (shouldLog) {
-                Logger.info(`   ETH同池: 当前Up $${ethUpAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} ${combinedCost < 1 ? '✅可套' : '❌>=1'}`);
+        // 计算最高可接受价格
+        let maxPriceLevel: number;
+        if (emergency.isEmergency) {
+            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - ethDownAvgPrice;
+        } else {
+            maxPriceLevel = 1 - safetyMargin - ethDownAvgPrice;
+        }
+        
+        // 计算所有满足条件的层级的总深度
+        let totalAvailableSize = 0;
+        let weightedAvgPrice = 0;
+        
+        for (const level of asks) {
+            if (level.price < maxPriceLevel) {
+                totalAvailableSize += level.size;
+                weightedAvgPrice += level.price * level.size;
             }
+        }
+        
+        const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
+        const combinedCost = avgAskPrice + ethDownAvgPrice;
+        
+        // 诊断日志
+        if (shouldLog && ethDownAvgPrice > 0) {
+            const levelsCount = asks.filter(l => l.price < maxPriceLevel).length;
+            const modeTag = emergency.isEmergency ? '🚨紧急' : '正常';
+            Logger.info(`   ETH同池[${modeTag}]: 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
+        }
+        
+        if (totalAvailableSize >= 1 && ethDownAvgPrice > 0) {
+            const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+            const neededShares = Math.abs(avgPrices.eth.imbalance);
+            const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (combinedCost < 1) {
-                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
-                const neededShares = Math.abs(avgPrices.eth.imbalance);
-                const maxShares = Math.min(neededShares, ethUpAskSize);  // 同池增持：吃掉全部深度
+            if (maxShares >= 1) {
+                const defaultAnalysis = {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: avgPrices.eth.imbalance,
+                    needMoreUp: true,
+                    needMoreDown: false,
+                    predictedAvgCost: combinedCost,
+                    predictedProfit: profitPercent,
+                    worthBuying: true,
+                };
                 
-                if (maxShares >= 1) {
-                    const defaultAnalysis = {
-                        hasPosition: true,
-                        currentAvgCost: 0,
-                        currentProfit: 0,
-                        imbalance: avgPrices.eth.imbalance,
-                        needMoreUp: true,
-                        needMoreDown: false,
-                        predictedAvgCost: combinedCost,
-                        predictedProfit: profitPercent,
-                        worthBuying: true,
-                    };
-                    
-                    opportunities.push({
-                        conditionId: ethMarketData.conditionId,
-                        slug: ethMarketData.market.slug,
-                        title: `${timeGroup} ETH 同池增持`,
-                        upToken: ethMarketData.upToken,
-                        downToken: ethMarketData.downToken,
-                        timeGroup,
-                        isCrossPool: false,
-                        upMarketSlug: ethMarketData.market.slug,
-                        downMarketSlug: ethMarketData.market.slug,
-                        downConditionId: ethMarketData.conditionId,
-                        upAskPrice: ethUpAskPrice,
-                        downAskPrice: 0,  // 不买 Down
-                        upAskSize: ethUpAskSize,
-                        downAskSize: 0,
-                        combinedCost,
-                        profitPercent,
-                        maxShares,
-                        endDate: ethMarketData.market.end_date_iso || '',
-                        upIsCheap: true,
-                        downIsCheap: false,
-                        priority: 5,
-                        tradingAction: 'buy_up_only',  // 只买 Up
-                        groupAnalysis: defaultAnalysis,
-                        eventAnalysis: defaultAnalysis,
-                        isSamePoolRebalance: true,
-                        rebalanceAsset: 'eth',
-                        rebalanceSide: 'up',
-                    } as ArbitrageOpportunity);
-                }
+                opportunities.push({
+                    conditionId: ethMarketData.conditionId,
+                    slug: ethMarketData.market.slug,
+                    title: `${timeGroup} ETH 同池增持`,
+                    upToken: ethMarketData.upToken,
+                    downToken: ethMarketData.downToken,
+                    timeGroup,
+                    isCrossPool: false,
+                    upMarketSlug: ethMarketData.market.slug,
+                    downMarketSlug: ethMarketData.market.slug,
+                    downConditionId: ethMarketData.conditionId,
+                    upAskPrice: avgAskPrice,
+                    downAskPrice: 0,  // 不买 Down
+                    upAskSize: totalAvailableSize,
+                    downAskSize: 0,
+                    combinedCost,
+                    profitPercent,
+                    maxShares,
+                    endDate: ethMarketData.market.end_date_iso || '',
+                    upIsCheap: true,
+                    downIsCheap: false,
+                    priority: 5,
+                    tradingAction: 'buy_up_only',  // 只买 Up
+                    groupAnalysis: defaultAnalysis,
+                    eventAnalysis: defaultAnalysis,
+                    isSamePoolRebalance: true,
+                    rebalanceAsset: 'eth',
+                    rebalanceSide: 'up',
+                } as ArbitrageOpportunity);
             }
         }
     }
@@ -1244,59 +1369,77 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：如果持有 ETH Up 且 Up > Down，尝试买入 ETH Down
     if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
-        const ethDownAskPrice = ethMarketData.downBook.bestAsk;
-        const ethDownAskSize = ethMarketData.downBook.bestAskSize;
+        const asks = ethMarketData.downBook.asks || [];
         
-        if (ethUpAvgPrice > 0 && ethDownAskPrice > 0) {
-            const combinedCost = ethUpAvgPrice + ethDownAskPrice;
+        // 计算最高可接受价格
+        let maxPriceLevel: number;
+        if (emergency.isEmergency) {
+            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - ethUpAvgPrice;
+        } else {
+            maxPriceLevel = 1 - safetyMargin - ethUpAvgPrice;
+        }
+        
+        // 计算所有满足条件的层级的总深度
+        let totalAvailableSize = 0;
+        let weightedAvgPrice = 0;
+        
+        for (const level of asks) {
+            if (level.price < maxPriceLevel) {
+                totalAvailableSize += level.size;
+                weightedAvgPrice += level.price * level.size;
+            }
+        }
+        
+        const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
+        const combinedCost = ethUpAvgPrice + avgAskPrice;
+        
+        if (totalAvailableSize >= 1 && ethUpAvgPrice > 0) {
+            const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
+            const neededShares = avgPrices.eth.imbalance;
+            const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (combinedCost < 1) {
-                const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
-                const neededShares = avgPrices.eth.imbalance;
-                const maxShares = Math.min(neededShares, ethDownAskSize);  // 同池增持：吃掉全部深度
+            if (maxShares >= 1) {
+                const defaultAnalysis = {
+                    hasPosition: true,
+                    currentAvgCost: 0,
+                    currentProfit: 0,
+                    imbalance: avgPrices.eth.imbalance,
+                    needMoreUp: false,
+                    needMoreDown: true,
+                    predictedAvgCost: combinedCost,
+                    predictedProfit: profitPercent,
+                    worthBuying: true,
+                };
                 
-                if (maxShares >= 1) {
-                    const defaultAnalysis = {
-                        hasPosition: true,
-                        currentAvgCost: 0,
-                        currentProfit: 0,
-                        imbalance: avgPrices.eth.imbalance,
-                        needMoreUp: false,
-                        needMoreDown: true,
-                        predictedAvgCost: combinedCost,
-                        predictedProfit: profitPercent,
-                        worthBuying: true,
-                    };
-                    
-                    opportunities.push({
-                        conditionId: ethMarketData.conditionId,
-                        slug: ethMarketData.market.slug,
-                        title: `${timeGroup} ETH 同池增持`,
-                        upToken: ethMarketData.upToken,
-                        downToken: ethMarketData.downToken,
-                        timeGroup,
-                        isCrossPool: false,
-                        upMarketSlug: ethMarketData.market.slug,
-                        downMarketSlug: ethMarketData.market.slug,
-                        downConditionId: ethMarketData.conditionId,
-                        upAskPrice: 0,  // 不买 Up
-                        downAskPrice: ethDownAskPrice,
-                        upAskSize: 0,
-                        downAskSize: ethDownAskSize,
-                        combinedCost,
-                        profitPercent,
-                        maxShares,
-                        endDate: ethMarketData.market.end_date_iso || '',
-                        upIsCheap: false,
-                        downIsCheap: true,
-                        priority: 5,
-                        tradingAction: 'buy_down_only',  // 只买 Down
-                        groupAnalysis: defaultAnalysis,
-                        eventAnalysis: defaultAnalysis,
-                        isSamePoolRebalance: true,
-                        rebalanceAsset: 'eth',
-                        rebalanceSide: 'down',
-                    } as ArbitrageOpportunity);
+                opportunities.push({
+                    conditionId: ethMarketData.conditionId,
+                    slug: ethMarketData.market.slug,
+                    title: `${timeGroup} ETH 同池增持`,
+                    upToken: ethMarketData.upToken,
+                    downToken: ethMarketData.downToken,
+                    timeGroup,
+                    isCrossPool: false,
+                    upMarketSlug: ethMarketData.market.slug,
+                    downMarketSlug: ethMarketData.market.slug,
+                    downConditionId: ethMarketData.conditionId,
+                    upAskPrice: 0,  // 不买 Up
+                    downAskPrice: avgAskPrice,
+                    upAskSize: 0,
+                    downAskSize: totalAvailableSize,
+                    combinedCost,
+                    profitPercent,
+                    maxShares,
+                    endDate: ethMarketData.market.end_date_iso || '',
+                    upIsCheap: false,
+                    downIsCheap: true,
+                    priority: 5,
+                    tradingAction: 'buy_down_only',  // 只买 Down
+                    groupAnalysis: defaultAnalysis,
+                    eventAnalysis: defaultAnalysis,
+                    isSamePoolRebalance: true,
+                    rebalanceAsset: 'eth',
+                    rebalanceSide: 'down',
+                } as ArbitrageOpportunity);
                 }
             }
         }

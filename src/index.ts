@@ -9,13 +9,14 @@
 
 import CONFIG from './config';
 import Logger from './logger';
-import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities, generateSamePoolOpportunities, getMarketEndTime } from './scanner';
+import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWebSocketStatus, checkEventSwitch, generateHedgeOpportunities, generateSamePoolOpportunities, getMarketEndTime, checkEmergencyBalance, calculateBalancePercent } from './scanner';
+import { getAssetAvgPrices } from './positions';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
 import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
-import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal, recordArbitrageOpportunity } from './stopLoss';
+import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal, recordArbitrageOpportunity, checkExtremeImbalance, executeExtremeImbalanceSell, setEmergencyMode, isInEmergencyMode } from './stopLoss';
 import { executeSell } from './executor';
 import { getGlobalHedgeStats } from './hedging';
 import { initBinanceWs, isBinanceWsConnected } from './binance';
@@ -449,14 +450,50 @@ const mainLoop = async () => {
             
             // 只有在没有对冲需求时才进行常规套利
             if (!shouldSkipArbitrage && opportunities.length === 0) {
-                // 扫描跨池套利机会
-                opportunities = await scanArbitrageOpportunities(true);
+                // 检测紧急平衡和极端不平衡条件
+                const emergencyBalanceGroups = new Set<string>();  // 紧急平衡：停跨池，继续同池
+                const extremeImbalanceGroups = new Set<string>();  // 极端不平衡：停所有，执行卖出
                 
-                // 同时扫描同池增持机会（基于平均持仓价）
-                if (CONFIG.SAME_POOL_REBALANCE_ENABLED) {
-                    for (const timeGroup of ['15min', '1hr'] as const) {
-                        const samePoolOpps = generateSamePoolOpportunities(timeGroup);
-                        opportunities.push(...samePoolOpps);
+                for (const timeGroup of ['15min', '1hr'] as const) {
+                    const endTime = getMarketEndTime(timeGroup);
+                    const avgPrices = getAssetAvgPrices(timeGroup);
+                    
+                    if (endTime && avgPrices.btc && avgPrices.eth) {
+                        const btcBalance = calculateBalancePercent(avgPrices.btc.upShares, avgPrices.btc.downShares);
+                        const ethBalance = calculateBalancePercent(avgPrices.eth.upShares, avgPrices.eth.downShares);
+                        
+                        // 检测紧急平衡（最后 20 秒 + 平衡度 < 60%）
+                        const emergency = checkEmergencyBalance(timeGroup, btcBalance, ethBalance, endTime);
+                        if (emergency.isEmergency) {
+                            emergencyBalanceGroups.add(timeGroup);
+                        }
+                    }
+                    
+                    // 检测极端不平衡（由 checkExtremeImbalance 处理，已触发则在 isInEmergencyMode 中）
+                    if (isInEmergencyMode(timeGroup)) {
+                        extremeImbalanceGroups.add(timeGroup);
+                    }
+                }
+                
+                // 如果有极端不平衡，停止所有套利
+                if (extremeImbalanceGroups.size > 0) {
+                    // 不做任何套利，等待卖出完成
+                } else {
+                    // 如果有紧急平衡，只停止跨池，继续同池
+                    if (emergencyBalanceGroups.size === 0) {
+                        // 正常模式：扫描跨池套利机会
+                        opportunities = await scanArbitrageOpportunities(true);
+                    }
+                    
+                    // 同池增持机会（紧急平衡模式下继续，会放宽限制）
+                    if (CONFIG.SAME_POOL_REBALANCE_ENABLED) {
+                        for (const timeGroup of ['15min', '1hr'] as const) {
+                            // 极端不平衡模式下不做同池
+                            if (!extremeImbalanceGroups.has(timeGroup)) {
+                                const samePoolOpps = generateSamePoolOpportunities(timeGroup);
+                                opportunities.push(...samePoolOpps);
+                            }
+                        }
                     }
                 }
             }
@@ -542,6 +579,15 @@ const mainLoop = async () => {
                         Logger.warning(`🚨 触发止损: ${signal.timeGroup} - ${signal.reason}`);
                         await executeStopLoss(executeSell, signal);
                     }
+                }
+            }
+            
+            // 极端不平衡检测（最后 90 秒，平衡度 < 30% 时提前平仓不平衡部分）
+            for (const timeGroup of ['15min', '1hr'] as const) {
+                const extremeSignal = checkExtremeImbalance(timeGroup);
+                if (extremeSignal) {
+                    Logger.warning(`🚨 极端不平衡触发: ${timeGroup}`);
+                    await executeExtremeImbalanceSell(executeSell, extremeSignal);
                 }
             }
             

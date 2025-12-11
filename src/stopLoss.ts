@@ -77,6 +77,13 @@ const triggeredStopLoss = new Map<TimeGroup, StopLossState>();
 // 价格追踪记录
 const priceTrackers = new Map<TimeGroup, PriceTracker>();
 
+// 紧急模式状态追踪（紧急平衡或极端不平衡触发后，停止所有套利）
+const emergencyModeActive = new Map<TimeGroup, { 
+    mode: 'emergency_balance' | 'extreme_imbalance';
+    reason: string;
+    triggeredAt: number;
+}>();
+
 // 上次检查时间
 let lastCheckTime = 0;
 
@@ -590,7 +597,42 @@ export const clearTriggeredStopLoss = (timeGroup?: TimeGroup): void => {
         priceTrackers.clear();
         tokenMapCache.clear();
         binanceLogTime.clear();
+        emergencyModeActive.clear();
     }
+};
+
+/**
+ * 设置紧急模式（停止所有套利）
+ */
+export const setEmergencyMode = (
+    timeGroup: TimeGroup, 
+    mode: 'emergency_balance' | 'extreme_imbalance',
+    reason: string
+): void => {
+    emergencyModeActive.set(timeGroup, {
+        mode,
+        reason,
+        triggeredAt: Date.now()
+    });
+    Logger.warning(`🚨 [紧急模式] ${timeGroup} 已激活: ${reason}`);
+};
+
+/**
+ * 清除紧急模式
+ */
+export const clearEmergencyMode = (timeGroup?: TimeGroup): void => {
+    if (timeGroup) {
+        emergencyModeActive.delete(timeGroup);
+    } else {
+        emergencyModeActive.clear();
+    }
+};
+
+/**
+ * 检查是否在紧急模式
+ */
+export const isInEmergencyMode = (timeGroup: TimeGroup): boolean => {
+    return emergencyModeActive.has(timeGroup);
 };
 
 /**
@@ -607,21 +649,33 @@ export const shouldPauseTrading = (timeGroup: TimeGroup): {
     pause: boolean; 
     reason: string;
     shouldHedge: boolean;  // 是否应该进入对冲模式（仅补仓，不套利）
+    isEmergencyMode: boolean;  // 是否在紧急模式（停止所有套利，只允许紧急操作）
 } => {
+    // 检查紧急模式（紧急平衡或极端不平衡触发后）
+    const emergencyState = emergencyModeActive.get(timeGroup);
+    if (emergencyState) {
+        return { 
+            pause: true, 
+            reason: `${emergencyState.reason}，停止套利`, 
+            shouldHedge: false,
+            isEmergencyMode: true
+        };
+    }
+    
     if (!CONFIG.STOP_LOSS_ENABLED) {
-        return { pause: false, reason: '', shouldHedge: false };
+        return { pause: false, reason: '', shouldHedge: false, isEmergencyMode: false };
     }
     
     // 对冲模式：检查对冲是否已完成
     if (CONFIG.STOP_LOSS_MODE === 'hedge') {
         // 对冲已完成，暂停所有交易，等待事件结束
         if (isHedgeCompleted(timeGroup)) {
-            return { pause: true, reason: '对冲已完成，等待事件结束', shouldHedge: false };
+            return { pause: true, reason: '对冲已完成，等待事件结束', shouldHedge: false, isEmergencyMode: false };
         }
         
         // 正在对冲中，继续对冲（不套利）
         if (isHedging(timeGroup)) {
-            return { pause: false, reason: '对冲进行中', shouldHedge: true };
+            return { pause: false, reason: '对冲进行中', shouldHedge: true, isEmergencyMode: false };
         }
     }
     
@@ -629,14 +683,14 @@ export const shouldPauseTrading = (timeGroup: TimeGroup): {
     if (triggeredStopLoss.has(timeGroup)) {
         if (CONFIG.STOP_LOSS_MODE === 'hedge') {
             // 对冲模式：停止套利，开始对冲补仓
-            return { pause: false, reason: '风险触发，停止套利，开始对冲', shouldHedge: true };
+            return { pause: false, reason: '风险触发，停止套利，开始对冲', shouldHedge: true, isEmergencyMode: false };
         } else {
             // 平仓模式：暂停交易
-            return { pause: true, reason: '止损已触发，暂停开仓', shouldHedge: false };
+            return { pause: true, reason: '止损已触发，暂停开仓', shouldHedge: false, isEmergencyMode: false };
         }
     }
     
-    return { pause: false, reason: '', shouldHedge: false };
+    return { pause: false, reason: '', shouldHedge: false, isEmergencyMode: false };
 };
 
 /**
@@ -816,6 +870,273 @@ export const getTrackingStatus = (): Array<{
     return result;
 };
 
+// ========== 极端不平衡提前平仓 ==========
+
+// 已触发极端不平衡的记录
+const triggeredExtremeImbalance = new Set<TimeGroup>();
+
+// 上次极端不平衡日志时间
+const extremeImbalanceLogTime = new Map<TimeGroup, number>();
+
+/**
+ * 计算平衡度（0-100%）
+ */
+const calculateBalance = (upShares: number, downShares: number): number => {
+    if (upShares === 0 && downShares === 0) return 100;
+    if (upShares === 0 || downShares === 0) return 0;
+    return Math.min(upShares, downShares) / Math.max(upShares, downShares) * 100;
+};
+
+/**
+ * 检查极端不平衡并返回平仓信息
+ * 
+ * 逻辑：
+ * - 平衡度 < 30% 说明走势非常确定（BTC/ETH 同向）
+ * - 提前平掉不平衡部分，保留平衡部分
+ * - 结果出来后，平衡部分盈利抵消平仓亏损
+ */
+export interface ExtremeImbalanceSignal {
+    timeGroup: TimeGroup;
+    reason: string;
+    btcBalance: number;
+    ethBalance: number;
+    // 需要平掉的数量
+    btcUpToSell: number;
+    btcDownToSell: number;
+    ethUpToSell: number;
+    ethDownToSell: number;
+}
+
+export const checkExtremeImbalance = (timeGroup: TimeGroup): ExtremeImbalanceSignal | null => {
+    if (!CONFIG.EXTREME_IMBALANCE_ENABLED) return null;
+    
+    // 已触发过，不再检测
+    if (triggeredExtremeImbalance.has(timeGroup)) return null;
+    
+    const markets = tokenMapCache.get(timeGroup);
+    if (!markets?.btc?.endDate) return null;
+    
+    const now = Date.now();
+    const endTime = new Date(markets.btc.endDate).getTime();
+    const secondsToEnd = (endTime - now) / 1000;
+    
+    // 只在最后 X 秒内检查
+    if (secondsToEnd <= 0 || secondsToEnd > CONFIG.EXTREME_IMBALANCE_SECONDS) {
+        return null;
+    }
+    
+    // 获取仓位信息
+    const avgPrices = getAssetAvgPrices(timeGroup);
+    if (!avgPrices.btc || !avgPrices.eth) return null;
+    
+    const btcUpShares = avgPrices.btc.upShares;
+    const btcDownShares = avgPrices.btc.downShares;
+    const ethUpShares = avgPrices.eth.upShares;
+    const ethDownShares = avgPrices.eth.downShares;
+    
+    // 计算平衡度
+    const btcBalance = calculateBalance(btcUpShares, btcDownShares);
+    const ethBalance = calculateBalance(ethUpShares, ethDownShares);
+    
+    // 定期日志
+    const lastLog = extremeImbalanceLogTime.get(timeGroup) || 0;
+    if (now - lastLog >= 5000) {
+        extremeImbalanceLogTime.set(timeGroup, now);
+        Logger.info(`📊 [极端不平衡检测] ${timeGroup} | BTC=${btcBalance.toFixed(0)}% ETH=${ethBalance.toFixed(0)}% | 阈值=${CONFIG.EXTREME_IMBALANCE_THRESHOLD}% | 剩余${secondsToEnd.toFixed(0)}秒`);
+    }
+    
+    // 检查是否触发（任一池平衡度低于阈值）
+    if (btcBalance >= CONFIG.EXTREME_IMBALANCE_THRESHOLD && ethBalance >= CONFIG.EXTREME_IMBALANCE_THRESHOLD) {
+        return null;
+    }
+    
+    // ========== 核心逻辑：判断走势方向，平掉"会输"的一边 ==========
+    // 
+    // 1. 看市场价格判断走势方向
+    //    - BTC Up 价格 > Down 价格 → 市场认为 BTC 会涨
+    //    - BTC Down 价格 > Up 价格 → 市场认为 BTC 会跌
+    // 
+    // 2. 假设 BTC/ETH 80% 同向
+    //    - 如果 BTC 涨 → ETH 也涨 → Up 赢
+    //    - 如果 BTC 跌 → ETH 也跌 → Down 赢
+    // 
+    // 3. 平掉所有"会输"的仓位
+    //    - 如果预测涨：平掉所有 Down（BTC Down + ETH Down）
+    //    - 如果预测跌：平掉所有 Up（BTC Up + ETH Up）
+    // 
+    // 4. 保留所有"会赢"的仓位，等待结算
+    
+    // 获取当前市场价格
+    const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+    const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
+    const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
+    const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
+    
+    if (!btcUpBook || !btcDownBook || !ethUpBook || !ethDownBook) {
+        return null;
+    }
+    
+    // 使用 Bid 价格（卖出价）判断市场预期
+    const btcUpPrice = btcUpBook.bestBid;
+    const btcDownPrice = btcDownBook.bestBid;
+    const ethUpPrice = ethUpBook.bestBid;
+    const ethDownPrice = ethDownBook.bestBid;
+    
+    // 判断走势方向（看 BTC 价格，因为 BTC 是主导）
+    // Up 价格高 → 市场认为会涨 → Up 赢
+    // Down 价格高 → 市场认为会跌 → Down 赢
+    const predictUp = btcUpPrice > btcDownPrice;
+    const referencePool = 'BTC';
+    
+    // 计算需要平掉的数量
+    let btcUpToSell = 0, btcDownToSell = 0;
+    let ethUpToSell = 0, ethDownToSell = 0;
+    
+    if (predictUp) {
+        // 预测涨 → Up 赢 → 平掉所有 Down
+        btcDownToSell = btcDownShares;
+        ethDownToSell = ethDownShares;
+    } else {
+        // 预测跌 → Down 赢 → 平掉所有 Up
+        btcUpToSell = btcUpShares;
+        ethUpToSell = ethUpShares;
+    }
+    
+    // 确保至少有一边需要平仓
+    const totalToSell = btcUpToSell + btcDownToSell + ethUpToSell + ethDownToSell;
+    if (totalToSell < 10) return null;  // 太小不值得平
+    
+    // 标记已触发
+    triggeredExtremeImbalance.add(timeGroup);
+    
+    const direction = predictUp ? '涨' : '跌';
+    const winSide = predictUp ? 'Up' : 'Down';
+    const loseSide = predictUp ? 'Down' : 'Up';
+    const reason = `极端不平衡 → BTC ${direction}预期 (Up$${btcUpPrice.toFixed(2)} vs Down$${btcDownPrice.toFixed(2)}) → 平掉所有 ${loseSide}`;
+    
+    // 设置紧急模式，停止所有套利
+    setEmergencyMode(timeGroup, 'extreme_imbalance', reason);
+    
+    Logger.warning(`🚨 [极端不平衡] ${timeGroup} 触发！`);
+    Logger.warning(`   BTC: Up=${btcUpShares.toFixed(0)}@$${btcUpPrice.toFixed(2)} Down=${btcDownShares.toFixed(0)}@$${btcDownPrice.toFixed(2)} 平衡=${btcBalance.toFixed(0)}%`);
+    Logger.warning(`   ETH: Up=${ethUpShares.toFixed(0)}@$${ethUpPrice.toFixed(2)} Down=${ethDownShares.toFixed(0)}@$${ethDownPrice.toFixed(2)} 平衡=${ethBalance.toFixed(0)}%`);
+    Logger.warning(`   判断: BTC Up $${btcUpPrice.toFixed(2)} ${predictUp ? '>' : '<'} Down $${btcDownPrice.toFixed(2)} → BTC ${direction} → ETH 同向${direction}`);
+    Logger.warning(`   策略: 平掉所有 ${loseSide}（会输），保留所有 ${winSide}（会赢）`);
+    Logger.warning(`   保留: BTC ${winSide} ${predictUp ? btcUpShares.toFixed(0) : btcDownShares.toFixed(0)} + ETH ${winSide} ${predictUp ? ethUpShares.toFixed(0) : ethDownShares.toFixed(0)}`);
+    Logger.warning(`   平仓: BTC ${loseSide} ${predictUp ? btcDownShares.toFixed(0) : btcUpShares.toFixed(0)} + ETH ${loseSide} ${predictUp ? ethDownShares.toFixed(0) : ethUpShares.toFixed(0)}`);
+    
+    return {
+        timeGroup,
+        reason,
+        btcBalance,
+        ethBalance,
+        btcUpToSell,
+        btcDownToSell,
+        ethUpToSell,
+        ethDownToSell,
+    };
+};
+
+/**
+ * 执行极端不平衡平仓
+ */
+export const executeExtremeImbalanceSell = async (
+    sellFunction: (tokenId: string, shares: number, price: number, label: string) => Promise<{ success: boolean; received: number }>,
+    signal: ExtremeImbalanceSignal
+): Promise<{
+    success: boolean;
+    totalSold: number;
+    totalReceived: number;
+}> => {
+    const markets = tokenMapCache.get(signal.timeGroup);
+    if (!markets?.btc || !markets?.eth) {
+        Logger.error(`[极端不平衡] 找不到 ${signal.timeGroup} 的 token 信息`);
+        return { success: false, totalSold: 0, totalReceived: 0 };
+    }
+    
+    let totalReceived = 0;
+    let totalSold = 0;
+    
+    // 获取当前价格
+    const btcUpBook = orderBookManager.getOrderBook(markets.btc.upTokenId);
+    const btcDownBook = orderBookManager.getOrderBook(markets.btc.downTokenId);
+    const ethUpBook = orderBookManager.getOrderBook(markets.eth.upTokenId);
+    const ethDownBook = orderBookManager.getOrderBook(markets.eth.downTokenId);
+    
+    // 平仓 BTC Up
+    if (signal.btcUpToSell > 0 && btcUpBook && btcUpBook.bestBid > 0) {
+        const result = await sellFunction(
+            markets.btc.upTokenId,
+            signal.btcUpToSell,
+            btcUpBook.bestBid,
+            `极端不平衡-BTC Up`
+        );
+        if (result.success) {
+            totalReceived += result.received;
+            totalSold += signal.btcUpToSell;
+        }
+    }
+    
+    // 平仓 BTC Down
+    if (signal.btcDownToSell > 0 && btcDownBook && btcDownBook.bestBid > 0) {
+        const result = await sellFunction(
+            markets.btc.downTokenId,
+            signal.btcDownToSell,
+            btcDownBook.bestBid,
+            `极端不平衡-BTC Down`
+        );
+        if (result.success) {
+            totalReceived += result.received;
+            totalSold += signal.btcDownToSell;
+        }
+    }
+    
+    // 平仓 ETH Up
+    if (signal.ethUpToSell > 0 && ethUpBook && ethUpBook.bestBid > 0) {
+        const result = await sellFunction(
+            markets.eth.upTokenId,
+            signal.ethUpToSell,
+            ethUpBook.bestBid,
+            `极端不平衡-ETH Up`
+        );
+        if (result.success) {
+            totalReceived += result.received;
+            totalSold += signal.ethUpToSell;
+        }
+    }
+    
+    // 平仓 ETH Down
+    if (signal.ethDownToSell > 0 && ethDownBook && ethDownBook.bestBid > 0) {
+        const result = await sellFunction(
+            markets.eth.downTokenId,
+            signal.ethDownToSell,
+            ethDownBook.bestBid,
+            `极端不平衡-ETH Down`
+        );
+        if (result.success) {
+            totalReceived += result.received;
+            totalSold += signal.ethDownToSell;
+        }
+    }
+    
+    Logger.info(`✅ [极端不平衡] 平仓完成: 共卖出 ${totalSold.toFixed(0)} shares, 收回 $${totalReceived.toFixed(2)}`);
+    
+    return { success: true, totalSold, totalReceived };
+};
+
+/**
+ * 清除极端不平衡记录（事件切换时调用）
+ */
+export const clearExtremeImbalance = (timeGroup?: TimeGroup): void => {
+    if (timeGroup) {
+        triggeredExtremeImbalance.delete(timeGroup);
+        extremeImbalanceLogTime.delete(timeGroup);
+    } else {
+        triggeredExtremeImbalance.clear();
+        extremeImbalanceLogTime.clear();
+    }
+};
+
 export default {
     updateTokenMap,
     checkStopLossSignals,
@@ -824,5 +1145,8 @@ export default {
     clearTriggeredStopLoss,
     getStopLossStatus,
     getTriggeredSignal,
+    checkExtremeImbalance,
+    executeExtremeImbalanceSell,
+    clearExtremeImbalance,
 };
 

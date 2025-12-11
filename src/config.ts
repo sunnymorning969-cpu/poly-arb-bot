@@ -137,6 +137,27 @@ export const CONFIG = {
     // 目的：逐步平衡每个池内的 Up/Down，减少止损时的亏损
     SAME_POOL_REBALANCE_ENABLED: process.env.SAME_POOL_REBALANCE_ENABLED === 'true',
     
+    // 同池安全边际（%）：组合价必须 < 1 - margin 才买入，防止平均成本超过 1
+    SAME_POOL_SAFETY_MARGIN: parseFloat(process.env.SAME_POOL_SAFETY_MARGIN || '2'),
+    
+    // ========== 紧急平衡（最后 X 秒强制平衡）==========
+    // 是否启用紧急平衡
+    EMERGENCY_BALANCE_ENABLED: process.env.EMERGENCY_BALANCE_ENABLED === 'true',
+    // 最后多少秒进入紧急平衡模式
+    EMERGENCY_BALANCE_SECONDS: parseInt(process.env.EMERGENCY_BALANCE_SECONDS || '20'),
+    // 平衡度低于此阈值时触发紧急平衡（%）
+    EMERGENCY_BALANCE_THRESHOLD: parseFloat(process.env.EMERGENCY_BALANCE_THRESHOLD || '60'),
+    // 紧急平衡允许的最大亏损（%）：组合价可以放宽到 < 1 + maxLoss
+    EMERGENCY_BALANCE_MAX_LOSS: parseFloat(process.env.EMERGENCY_BALANCE_MAX_LOSS || '5'),
+    
+    // ========== 极端不平衡提前平仓 ==========
+    // 当平衡度极低时，说明走势确定，提前平掉不平衡部分
+    EXTREME_IMBALANCE_ENABLED: process.env.EXTREME_IMBALANCE_ENABLED === 'true',
+    // 最后多少秒检查极端不平衡
+    EXTREME_IMBALANCE_SECONDS: parseInt(process.env.EXTREME_IMBALANCE_SECONDS || '90'),
+    // 平衡度低于此值触发（%）
+    EXTREME_IMBALANCE_THRESHOLD: parseFloat(process.env.EXTREME_IMBALANCE_THRESHOLD || '30'),
+    
     // ========== 链配置 ==========
     CHAIN_ID: 137,
 };
