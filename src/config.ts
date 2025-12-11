@@ -96,7 +96,12 @@ export const CONFIG = {
     STOP_LOSS_WINDOW_SEC: parseInt(process.env.STOP_LOSS_WINDOW_SEC || '180'),
     
     // 组合成本阈值（低于此值计入风险统计）
-    STOP_LOSS_COST_THRESHOLD: parseFloat(process.env.STOP_LOSS_COST_THRESHOLD || '0.6'),
+    // 支持两种输入格式：0.75 或 75 都表示 $0.75
+    STOP_LOSS_COST_THRESHOLD: (() => {
+        const val = parseFloat(process.env.STOP_LOSS_COST_THRESHOLD || '0.6');
+        // 组合价格范围是 0-1，如果 > 1，视为百分比输入，自动除以 100
+        return val > 1 ? val / 100 : val;
+    })(),
     
     // 止损检查间隔（毫秒）
     STOP_LOSS_CHECK_INTERVAL_MS: parseInt(process.env.STOP_LOSS_CHECK_INTERVAL_MS || '1000'),
