@@ -569,8 +569,15 @@ export const fetchRealOutcome = async (slug: string): Promise<'up' | 'down' | nu
 
 /**
  * 结算一个仓位
+ * @param pos 仓位信息
+ * @param outcome 结算结果
+ * @param balanceSnapshot 可选的仓位平衡度快照（后台结算时使用）
  */
-export const settlePosition = (pos: Position, outcome: 'up' | 'down'): SettlementResult => {
+export const settlePosition = (
+    pos: Position, 
+    outcome: 'up' | 'down',
+    balanceSnapshot?: BalanceSnapshot
+): SettlementResult => {
     // outcome 必须传入（真实结果或模拟结果）
     
     const totalCost = pos.upCost + pos.downCost;
@@ -588,22 +595,36 @@ export const settlePosition = (pos: Position, outcome: 'up' | 'down'): Settlemen
     const profit = payout - totalCost;
     const profitPercent = totalCost > 0 ? (profit / totalCost) * 100 : 0;
     
-    // 获取该 timeGroup 的仓位平衡度
-    const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
-    const timeGroup: TimeGroup = is15min ? '15min' : '1hr';
-    const avgPrices = getAssetAvgPrices(timeGroup);
+    // 获取仓位平衡度（优先使用快照，否则获取当前仓位）
+    let btcUp: number, btcDown: number, btcBalancePercent: number;
+    let ethUp: number, ethDown: number, ethBalancePercent: number;
     
-    const btcUp = avgPrices.btc?.upShares || 0;
-    const btcDown = avgPrices.btc?.downShares || 0;
-    const ethUp = avgPrices.eth?.upShares || 0;
-    const ethDown = avgPrices.eth?.downShares || 0;
-    
-    const btcBalancePercent = (btcUp > 0 || btcDown > 0) 
-        ? Math.min(btcUp, btcDown) / Math.max(btcUp, btcDown) * 100 
-        : 0;
-    const ethBalancePercent = (ethUp > 0 || ethDown > 0) 
-        ? Math.min(ethUp, ethDown) / Math.max(ethUp, ethDown) * 100 
-        : 0;
+    if (balanceSnapshot) {
+        // 使用传入的快照
+        btcUp = balanceSnapshot.btcUp;
+        btcDown = balanceSnapshot.btcDown;
+        btcBalancePercent = balanceSnapshot.btcBalancePercent;
+        ethUp = balanceSnapshot.ethUp;
+        ethDown = balanceSnapshot.ethDown;
+        ethBalancePercent = balanceSnapshot.ethBalancePercent;
+    } else {
+        // 获取当前仓位
+        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+        const timeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        const avgPrices = getAssetAvgPrices(timeGroup);
+        
+        btcUp = avgPrices.btc?.upShares || 0;
+        btcDown = avgPrices.btc?.downShares || 0;
+        ethUp = avgPrices.eth?.upShares || 0;
+        ethDown = avgPrices.eth?.downShares || 0;
+        
+        btcBalancePercent = (btcUp > 0 || btcDown > 0) 
+            ? Math.min(btcUp, btcDown) / Math.max(btcUp, btcDown) * 100 
+            : 0;
+        ethBalancePercent = (ethUp > 0 || ethDown > 0) 
+            ? Math.min(ethUp, ethDown) / Math.max(ethUp, ethDown) * 100 
+            : 0;
+    }
     
     const result: SettlementResult = {
         position: { ...pos },
@@ -823,12 +844,23 @@ export const getOverallStats = (): {
     };
 };
 
+// 仓位平衡度快照
+interface BalanceSnapshot {
+    btcUp: number;
+    btcDown: number;
+    btcBalancePercent: number;
+    ethUp: number;
+    ethDown: number;
+    ethBalancePercent: number;
+}
+
 // 待结算队列（后台异步处理，不阻塞新事件）
 interface PendingSettlement {
     conditionId: string;
     pos: Position;
     timeGroup: TimeGroup;
     addedAt: number;
+    balanceSnapshot: BalanceSnapshot;  // 加入队列时的仓位快照
 }
 const pendingSettlements: PendingSettlement[] = [];
 let settlementTaskRunning = false;
@@ -848,15 +880,15 @@ const runSettlementTask = async (): Promise<void> => {
         const settledIndices: number[] = [];
         
         await Promise.all(pendingSettlements.map(async (item, index) => {
-            const { pos } = item;
+            const { pos, balanceSnapshot } = item;
             
             // 尝试获取真实结果
             const realOutcome = await fetchRealOutcome(pos.slug);
             
             if (realOutcome) {
-                // 获取到结果，结算（settlePosition 内部会触发 onSettlementCallback）
+                // 获取到结果，结算（传入仓位快照）
                 Logger.info(`${modeTag} 📊 ${pos.slug.slice(0, 25)} → ${realOutcome.toUpperCase()} 获胜`);
-                settlePosition(pos, realOutcome);
+                settlePosition(pos, realOutcome, balanceSnapshot);
                 settledIndices.push(index);
             } else {
                 // 打印等待日志（每 15 秒一次）
@@ -906,13 +938,35 @@ export const forceSettleByTimeGroup = async (timeGroup: TimeGroup): Promise<Sett
     
     Logger.info(`🔄 [${timeGroup}] 检测到 ${positionsToSettle.length} 个仓位需要结算`);
     
+    // ⚠️ 在删除仓位之前，先获取仓位平衡度快照
+    const avgPrices = getAssetAvgPrices(timeGroup);
+    const btcUp = avgPrices.btc?.upShares || 0;
+    const btcDown = avgPrices.btc?.downShares || 0;
+    const ethUp = avgPrices.eth?.upShares || 0;
+    const ethDown = avgPrices.eth?.downShares || 0;
+    
+    const balanceSnapshot: BalanceSnapshot = {
+        btcUp,
+        btcDown,
+        btcBalancePercent: (btcUp > 0 || btcDown > 0) 
+            ? Math.min(btcUp, btcDown) / Math.max(btcUp, btcDown) * 100 
+            : 0,
+        ethUp,
+        ethDown,
+        ethBalancePercent: (ethUp > 0 || ethDown > 0) 
+            ? Math.min(ethUp, ethDown) / Math.max(ethUp, ethDown) * 100 
+            : 0,
+    };
+    
+    Logger.info(`   📊 仓位快照: BTC(Up=${btcUp.toFixed(0)} Down=${btcDown.toFixed(0)}) ETH(Up=${ethUp.toFixed(0)} Down=${ethDown.toFixed(0)})`);
+    
     // 立即从活跃仓位中移除（不影响新事件）
     for (const { conditionId } of positionsToSettle) {
         positions.delete(conditionId);
         deleteFromStorage(conditionId);
     }
     
-    // 加入后台结算队列
+    // 加入后台结算队列（带仓位快照）
     const now = Date.now();
     for (const { conditionId, pos } of positionsToSettle) {
         pendingSettlements.push({
@@ -920,6 +974,7 @@ export const forceSettleByTimeGroup = async (timeGroup: TimeGroup): Promise<Sett
             pos,
             timeGroup,
             addedAt: now,
+            balanceSnapshot,  // 保存仓位快照
         });
     }
     
