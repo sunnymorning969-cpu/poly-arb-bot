@@ -1007,37 +1007,35 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const opportunities: ArbitrageOpportunity[] = [];
     const avgPrices = getAssetAvgPrices(timeGroup);
     
-    // 获取市场数据
-    let btcMarket: PolymarketMarket | null = null;
-    let ethMarket: PolymarketMarket | null = null;
+    // 从 marketTokenMap 获取市场数据（包含 token 信息）
+    let btcMarketData: { conditionId: string; market: PolymarketMarket; upToken: any; downToken: any; upBook: OrderBookData; downBook: OrderBookData } | null = null;
+    let ethMarketData: { conditionId: string; market: PolymarketMarket; upToken: any; downToken: any; upBook: OrderBookData; downBook: OrderBookData } | null = null;
     
-    for (const market of cachedMarkets) {
-        const is15min = market.slug.includes('15m') || market.slug.includes('15min');
-        const marketTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+    for (const [conditionId, { market, upToken, downToken }] of marketTokenMap) {
+        const upBook = orderBookManager.getOrderBook(upToken.token_id);
+        const downBook = orderBookManager.getOrderBook(downToken.token_id);
+        
+        if (!upBook || !downBook) continue;
+        
+        const marketTimeGroup = getTimeGroup(market.slug);
         if (marketTimeGroup !== timeGroup) continue;
         
-        const isBtc = market.slug.toLowerCase().includes('btc');
-        const isEth = market.slug.toLowerCase().includes('eth');
+        const isBtc = market.slug.toLowerCase().includes('btc') || market.slug.toLowerCase().includes('bitcoin');
         
-        if (isBtc) btcMarket = market;
-        if (isEth) ethMarket = market;
+        if (isBtc) {
+            btcMarketData = { conditionId, market, upToken, downToken, upBook, downBook };
+        } else {
+            ethMarketData = { conditionId, market, upToken, downToken, upBook, downBook };
+        }
     }
     
-    if (!btcMarket || !ethMarket) return opportunities;
-    
-    // 获取订单簿
-    const btcConditionId = btcMarket.condition_id || btcMarket.conditionId;
-    const ethConditionId = ethMarket.condition_id || ethMarket.conditionId;
-    const btcBook = orderBookManager.getOrderBook(btcConditionId);
-    const ethBook = orderBookManager.getOrderBook(ethConditionId);
-    
-    if (!btcBook || !ethBook) return opportunities;
+    if (!btcMarketData || !ethMarketData) return opportunities;
     
     // BTC 池：如果持有 BTC Up 且 Up > Down，尝试买入 BTC Down
     if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
-        const btcDownAskPrice = btcBook.downBook.bestAsk;
-        const btcDownAskSize = btcBook.downBook.askSize;
+        const btcDownAskPrice = btcMarketData.downBook.bestAsk;
+        const btcDownAskSize = btcMarketData.downBook.askSize;
         
         if (btcUpAvgPrice > 0 && btcDownAskPrice > 0) {
             const combinedCost = btcUpAvgPrice + btcDownAskPrice;
@@ -1049,16 +1047,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                 
                 if (maxShares >= 1) {
                     opportunities.push({
-                        conditionId: btcConditionId,
-                        slug: btcMarket.slug,
+                        conditionId: btcMarketData.conditionId,
+                        slug: btcMarketData.market.slug,
                         title: `${timeGroup} BTC 同池增持`,
-                        upToken: btcMarket.upToken!,
-                        downToken: btcMarket.downToken!,
+                        upToken: btcMarketData.upToken,
+                        downToken: btcMarketData.downToken,
                         timeGroup,
                         isCrossPool: false,
-                        upMarketSlug: btcMarket.slug,
-                        downMarketSlug: btcMarket.slug,
-                        downConditionId: btcConditionId,
+                        upMarketSlug: btcMarketData.market.slug,
+                        downMarketSlug: btcMarketData.market.slug,
+                        downConditionId: btcMarketData.conditionId,
                         upAskPrice: 0,  // 不买 Up
                         downAskPrice: btcDownAskPrice,
                         upAskSize: 0,
@@ -1066,7 +1064,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         combinedCost,
                         profitPercent,
                         maxShares,
-                        endDate: btcMarket.end_date_iso || '',
+                        endDate: btcMarketData.market.end_date_iso || '',
                         upIsCheap: false,
                         downIsCheap: true,
                         isSamePoolRebalance: true,  // 标记为同池增持
@@ -1083,8 +1081,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // BTC 池：如果持有 BTC Down 且 Down > Up，尝试买入 BTC Up
     if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
-        const btcUpAskPrice = btcBook.upBook.bestAsk;
-        const btcUpAskSize = btcBook.upBook.askSize;
+        const btcUpAskPrice = btcMarketData.upBook.bestAsk;
+        const btcUpAskSize = btcMarketData.upBook.askSize;
         
         if (btcDownAvgPrice > 0 && btcUpAskPrice > 0) {
             const combinedCost = btcUpAskPrice + btcDownAvgPrice;
@@ -1096,16 +1094,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                 
                 if (maxShares >= 1) {
                     opportunities.push({
-                        conditionId: btcConditionId,
-                        slug: btcMarket.slug,
+                        conditionId: btcMarketData.conditionId,
+                        slug: btcMarketData.market.slug,
                         title: `${timeGroup} BTC 同池增持`,
-                        upToken: btcMarket.upToken!,
-                        downToken: btcMarket.downToken!,
+                        upToken: btcMarketData.upToken,
+                        downToken: btcMarketData.downToken,
                         timeGroup,
                         isCrossPool: false,
-                        upMarketSlug: btcMarket.slug,
-                        downMarketSlug: btcMarket.slug,
-                        downConditionId: btcConditionId,
+                        upMarketSlug: btcMarketData.market.slug,
+                        downMarketSlug: btcMarketData.market.slug,
+                        downConditionId: btcMarketData.conditionId,
                         upAskPrice: btcUpAskPrice,
                         downAskPrice: 0,  // 不买 Down
                         upAskSize: btcUpAskSize,
@@ -1113,7 +1111,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         combinedCost,
                         profitPercent,
                         maxShares,
-                        endDate: btcMarket.end_date_iso || '',
+                        endDate: btcMarketData.market.end_date_iso || '',
                         upIsCheap: true,
                         downIsCheap: false,
                         isSamePoolRebalance: true,
@@ -1130,8 +1128,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：如果持有 ETH Down 且 Down > Up，尝试买入 ETH Up
     if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
-        const ethUpAskPrice = ethBook.upBook.bestAsk;
-        const ethUpAskSize = ethBook.upBook.askSize;
+        const ethUpAskPrice = ethMarketData.upBook.bestAsk;
+        const ethUpAskSize = ethMarketData.upBook.askSize;
         
         if (ethDownAvgPrice > 0 && ethUpAskPrice > 0) {
             const combinedCost = ethUpAskPrice + ethDownAvgPrice;
@@ -1143,16 +1141,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                 
                 if (maxShares >= 1) {
                     opportunities.push({
-                        conditionId: ethConditionId,
-                        slug: ethMarket.slug,
+                        conditionId: ethMarketData.conditionId,
+                        slug: ethMarketData.market.slug,
                         title: `${timeGroup} ETH 同池增持`,
-                        upToken: ethMarket.upToken!,
-                        downToken: ethMarket.downToken!,
+                        upToken: ethMarketData.upToken,
+                        downToken: ethMarketData.downToken,
                         timeGroup,
                         isCrossPool: false,
-                        upMarketSlug: ethMarket.slug,
-                        downMarketSlug: ethMarket.slug,
-                        downConditionId: ethConditionId,
+                        upMarketSlug: ethMarketData.market.slug,
+                        downMarketSlug: ethMarketData.market.slug,
+                        downConditionId: ethMarketData.conditionId,
                         upAskPrice: ethUpAskPrice,
                         downAskPrice: 0,  // 不买 Down
                         upAskSize: ethUpAskSize,
@@ -1160,7 +1158,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         combinedCost,
                         profitPercent,
                         maxShares,
-                        endDate: ethMarket.end_date_iso || '',
+                        endDate: ethMarketData.market.end_date_iso || '',
                         upIsCheap: true,
                         downIsCheap: false,
                         isSamePoolRebalance: true,
@@ -1177,8 +1175,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：如果持有 ETH Up 且 Up > Down，尝试买入 ETH Down
     if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
-        const ethDownAskPrice = ethBook.downBook.bestAsk;
-        const ethDownAskSize = ethBook.downBook.askSize;
+        const ethDownAskPrice = ethMarketData.downBook.bestAsk;
+        const ethDownAskSize = ethMarketData.downBook.askSize;
         
         if (ethUpAvgPrice > 0 && ethDownAskPrice > 0) {
             const combinedCost = ethUpAvgPrice + ethDownAskPrice;
@@ -1190,16 +1188,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                 
                 if (maxShares >= 1) {
                     opportunities.push({
-                        conditionId: ethConditionId,
-                        slug: ethMarket.slug,
+                        conditionId: ethMarketData.conditionId,
+                        slug: ethMarketData.market.slug,
                         title: `${timeGroup} ETH 同池增持`,
-                        upToken: ethMarket.upToken!,
-                        downToken: ethMarket.downToken!,
+                        upToken: ethMarketData.upToken,
+                        downToken: ethMarketData.downToken,
                         timeGroup,
                         isCrossPool: false,
-                        upMarketSlug: ethMarket.slug,
-                        downMarketSlug: ethMarket.slug,
-                        downConditionId: ethConditionId,
+                        upMarketSlug: ethMarketData.market.slug,
+                        downMarketSlug: ethMarketData.market.slug,
+                        downConditionId: ethMarketData.conditionId,
                         upAskPrice: 0,  // 不买 Up
                         downAskPrice: ethDownAskPrice,
                         upAskSize: 0,
@@ -1207,7 +1205,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                         combinedCost,
                         profitPercent,
                         maxShares,
-                        endDate: ethMarket.end_date_iso || '',
+                        endDate: ethMarketData.market.end_date_iso || '',
                         upIsCheap: false,
                         downIsCheap: true,
                         isSamePoolRebalance: true,
