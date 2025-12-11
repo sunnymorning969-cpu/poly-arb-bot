@@ -834,7 +834,7 @@ const pendingSettlements: PendingSettlement[] = [];
 let settlementTaskRunning = false;
 
 /**
- * 后台结算任务：持续重试直到获取到结果
+ * 后台结算任务：并行处理所有待结算仓位
  */
 const runSettlementTask = async (): Promise<void> => {
     if (settlementTaskRunning) return;
@@ -844,34 +844,37 @@ const runSettlementTask = async (): Promise<void> => {
     const RETRY_DELAY_MS = 3000;  // 每 3 秒重试一次
     
     while (pendingSettlements.length > 0) {
-        const item = pendingSettlements[0];
-        const { pos } = item;
+        // 并行尝试获取所有待结算仓位的结果
+        const settledIndices: number[] = [];
         
-        // 尝试获取真实结果
-        const realOutcome = await fetchRealOutcome(pos.slug);
-        
-        if (realOutcome) {
-            // 获取到结果，结算并发送通知
-            Logger.info(`${modeTag} 📊 ${pos.slug.slice(0, 25)} → ${realOutcome.toUpperCase()} 获胜`);
-            const result = settlePosition(pos, realOutcome);
+        await Promise.all(pendingSettlements.map(async (item, index) => {
+            const { pos } = item;
             
-            // 发送 Telegram 通知
-            if (onSettlementCallback) {
-                try {
-                    onSettlementCallback(result);
-                } catch (e) {
-                    // 忽略回调错误
+            // 尝试获取真实结果
+            const realOutcome = await fetchRealOutcome(pos.slug);
+            
+            if (realOutcome) {
+                // 获取到结果，结算（settlePosition 内部会触发 onSettlementCallback）
+                Logger.info(`${modeTag} 📊 ${pos.slug.slice(0, 25)} → ${realOutcome.toUpperCase()} 获胜`);
+                settlePosition(pos, realOutcome);
+                settledIndices.push(index);
+            } else {
+                // 打印等待日志（每 15 秒一次）
+                const waitingTime = Math.floor((Date.now() - item.addedAt) / 1000);
+                if (waitingTime % 15 === 0) {
+                    Logger.info(`   ⏳ [后台] ${pos.slug.slice(0, 25)} - 等待结算结果 (已等待 ${waitingTime}s)...`);
                 }
             }
-            
-            // 从队列移除
-            pendingSettlements.shift();
-        } else {
-            // 等待后重试
-            const waitingTime = Math.floor((Date.now() - item.addedAt) / 1000);
-            if (waitingTime % 15 === 0) {  // 每 15 秒打印一次日志
-                Logger.info(`   ⏳ [后台] ${pos.slug.slice(0, 25)} - 等待结算结果 (已等待 ${waitingTime}s)...`);
-            }
+        }));
+        
+        // 从后往前删除已结算的项（避免索引错位）
+        settledIndices.sort((a, b) => b - a);
+        for (const index of settledIndices) {
+            pendingSettlements.splice(index, 1);
+        }
+        
+        // 如果还有未结算的，等待后继续
+        if (pendingSettlements.length > 0) {
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         }
     }

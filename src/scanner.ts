@@ -993,6 +993,10 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
     return opportunities;
 };
 
+// 同池诊断日志冷却
+let lastSamePoolDiagTime = 0;
+const SAME_POOL_DIAG_COOLDOWN = 30000;  // 30秒打印一次诊断
+
 /**
  * 生成同池增持机会（基于平均持仓价）
  * 
@@ -1006,6 +1010,19 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     
     const opportunities: ArbitrageOpportunity[] = [];
     const avgPrices = getAssetAvgPrices(timeGroup);
+    
+    // 诊断日志（每30秒打印一次）
+    const now = Date.now();
+    const shouldLog = now - lastSamePoolDiagTime >= SAME_POOL_DIAG_COOLDOWN;
+    if (shouldLog) {
+        lastSamePoolDiagTime = now;
+        if (avgPrices.btc) {
+            Logger.info(`📊 [同池诊断] BTC: Up=${avgPrices.btc.upShares.toFixed(0)}@$${avgPrices.btc.upAvgPrice.toFixed(3)} Down=${avgPrices.btc.downShares.toFixed(0)}@$${avgPrices.btc.downAvgPrice.toFixed(3)} imbalance=${avgPrices.btc.imbalance.toFixed(0)}`);
+        }
+        if (avgPrices.eth) {
+            Logger.info(`📊 [同池诊断] ETH: Up=${avgPrices.eth.upShares.toFixed(0)}@$${avgPrices.eth.upAvgPrice.toFixed(3)} Down=${avgPrices.eth.downShares.toFixed(0)}@$${avgPrices.eth.downAvgPrice.toFixed(3)} imbalance=${avgPrices.eth.imbalance.toFixed(0)}`);
+        }
+    }
     
     // 从 marketTokenMap 获取市场数据（包含 token 信息）
     let btcMarketData: { conditionId: string; market: PolymarketMarket; upToken: any; downToken: any; upBook: OrderBookData; downBook: OrderBookData } | null = null;
@@ -1039,6 +1056,11 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         
         if (btcUpAvgPrice > 0 && btcDownAskPrice > 0) {
             const combinedCost = btcUpAvgPrice + btcDownAskPrice;
+            
+            // 诊断日志
+            if (shouldLog) {
+                Logger.info(`   BTC同池: 平均Up $${btcUpAvgPrice.toFixed(3)} + 当前Down $${btcDownAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} ${combinedCost < 1 ? '✅可套' : '❌>=1'}`);
+            }
             
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
@@ -1161,6 +1183,11 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         
         if (ethDownAvgPrice > 0 && ethUpAskPrice > 0) {
             const combinedCost = ethUpAskPrice + ethDownAvgPrice;
+            
+            // 诊断日志
+            if (shouldLog) {
+                Logger.info(`   ETH同池: 当前Up $${ethUpAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} ${combinedCost < 1 ? '✅可套' : '❌>=1'}`);
+            }
             
             if (combinedCost < 1) {
                 const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
