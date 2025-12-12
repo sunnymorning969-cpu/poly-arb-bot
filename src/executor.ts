@@ -365,12 +365,15 @@ const calculateOrderSize = (
  * 
  * 重要：使用 size 参数直接指定 shares 数量，而不是 amount (USD)
  * 这样可以确保两边买到完全相同数量的 shares
+ * 
+ * @param isSamePool - 是否为同池套利（同池订单会应用 PRICE_TOLERANCE_PERCENT 提高成交率）
  */
 const executeBuy = async (
     tokenId: string,
     shares: number,           // shares 数量
     cachedPrice: number,      // 使用 WebSocket 缓存的价格
-    outcome: string
+    outcome: string,
+    isSamePool: boolean = false  // 是否为同池套利
 ): Promise<{ success: boolean; filled: number; avgPrice: number; cost: number }> => {
     const askPrice = cachedPrice;
     const estimatedCost = shares * askPrice;  // 预估成本
@@ -383,9 +386,14 @@ const executeBuy = async (
     
     const client = await initClient();
     
-    // 应用出价容忍度，提高成交率
-    const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
-    const orderPrice = Math.min(askPrice * tolerance, 0.99);
+    // 只对同池套利应用出价容忍度（跨池竞争小，不需要加价）
+    let orderPrice: number;
+    if (isSamePool) {
+        const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
+        orderPrice = Math.min(askPrice * tolerance, 0.99);
+    } else {
+        orderPrice = Math.min(askPrice, 0.99);  // 跨池直接用原价
+    }
     
     // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
     const amount = shares * orderPrice;
@@ -633,18 +641,20 @@ export const executeArbitrage = async (
     }
     
     // 并行执行下单（传入 shares 数量）
+    // 同池套利会应用 PRICE_TOLERANCE_PERCENT 提高成交率
+    const isSamePool = opportunity.isSamePoolRebalance || false;
     const promises: Promise<any>[] = [];
     
     if (upShares > 0) {
         promises.push(
-            executeBuy(opportunity.upToken.token_id, upShares, opportunity.upAskPrice, 'Up')
+            executeBuy(opportunity.upToken.token_id, upShares, opportunity.upAskPrice, 'Up', isSamePool)
                 .then(r => { upResult = r; })
         );
     }
     
     if (downShares > 0) {
         promises.push(
-            executeBuy(opportunity.downToken.token_id, downShares, opportunity.downAskPrice, 'Down')
+            executeBuy(opportunity.downToken.token_id, downShares, opportunity.downAskPrice, 'Down', isSamePool)
                 .then(r => { downResult = r; })
         );
     }

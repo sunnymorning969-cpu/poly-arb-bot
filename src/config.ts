@@ -148,7 +148,10 @@ export const CONFIG = {
     // 目的：逐步平衡每个池内的 Up/Down，减少止损时的亏损
     SAME_POOL_REBALANCE_ENABLED: process.env.SAME_POOL_REBALANCE_ENABLED === 'true',
     
-    // 同池安全边际（%）：组合价必须 < 1 - margin 才买入，防止平均成本超过 1
+    // 同池安全边际（%）：允许同池组合成本亏损的百分比，换取更高成交率
+    // 新公式：maxPrice = (1 - 平均持仓价) × (1 + safetyMargin)
+    // 例如：Up均价0.45, safetyMargin=2% → 最高可买Down价 = 0.55 × 1.02 = 0.561
+    // 组合成本 = 0.45 + 0.561 = 1.011（允许亏1.1%换取平衡）
     SAME_POOL_SAFETY_MARGIN: parseFloat(process.env.SAME_POOL_SAFETY_MARGIN || '2'),
     
     // ========== 紧急平衡（最后 X 秒强制平衡）==========

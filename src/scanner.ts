@@ -1092,11 +1092,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
         const asks = btcMarketData.downBook.asks || [];
         
+        // 新公式：maxPrice = (1 - avgUpPrice) * (1 + safetyMargin)
+        // 意思是：允许组合成本略微亏损，换取更高成交率
+        // 例如 Up均价0.45, safetyMargin=2% → maxPrice = 0.55 * 1.02 = 0.561
         let maxPriceLevel: number;
         if (emergency.isEmergency) {
-            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - btcUpAvgPrice;
+            // 紧急模式：允许更大亏损
+            maxPriceLevel = (1 - btcUpAvgPrice) * (1 + emergency.maxLossPercent / 100);
         } else {
-            maxPriceLevel = 1 - safetyMargin - btcUpAvgPrice;
+            // 正常模式：允许 safetyMargin% 的亏损换取平衡
+            maxPriceLevel = (1 - btcUpAvgPrice) * (1 + safetyMargin);
         }
         
         let totalAvailableSize = 0;
@@ -1178,11 +1183,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
         const asks = btcMarketData.upBook.asks || [];
         
+        // 新公式：允许组合成本略微亏损，换取更高成交率
         let maxPriceLevel: number;
         if (emergency.isEmergency) {
-            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - btcDownAvgPrice;
+            maxPriceLevel = (1 - btcDownAvgPrice) * (1 + emergency.maxLossPercent / 100);
         } else {
-            maxPriceLevel = 1 - safetyMargin - btcDownAvgPrice;
+            maxPriceLevel = (1 - btcDownAvgPrice) * (1 + safetyMargin);
         }
         
         let totalAvailableSize = 0;
@@ -1258,11 +1264,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
         const asks = ethMarketData.upBook.asks || [];
         
+        // 新公式：允许组合成本略微亏损，换取更高成交率
         let maxPriceLevel: number;
         if (emergency.isEmergency) {
-            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - ethDownAvgPrice;
+            maxPriceLevel = (1 - ethDownAvgPrice) * (1 + emergency.maxLossPercent / 100);
         } else {
-            maxPriceLevel = 1 - safetyMargin - ethDownAvgPrice;
+            maxPriceLevel = (1 - ethDownAvgPrice) * (1 + safetyMargin);
         }
         
         let totalAvailableSize = 0;
@@ -1344,11 +1351,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
         const asks = ethMarketData.downBook.asks || [];
         
+        // 新公式：允许组合成本略微亏损，换取更高成交率
         let maxPriceLevel: number;
         if (emergency.isEmergency) {
-            maxPriceLevel = 1 + (emergency.maxLossPercent / 100) - ethUpAvgPrice;
+            maxPriceLevel = (1 - ethUpAvgPrice) * (1 + emergency.maxLossPercent / 100);
         } else {
-            maxPriceLevel = 1 - safetyMargin - ethUpAvgPrice;
+            maxPriceLevel = (1 - ethUpAvgPrice) * (1 + safetyMargin);
         }
         
         let totalAvailableSize = 0;

@@ -46,38 +46,52 @@ if (!CONFIG.PRIVATE_KEY || !CONFIG.PROXY_WALLET) {
 }
 
 /**
+ * 检测是否为 Gnosis Safe 钱包
+ */
+const isGnosisSafe = async (address: string): Promise<boolean> => {
+    try {
+        const provider = new ethers.providers.JsonRpcProvider(CONFIG.RPC_URL);
+        const code = await provider.getCode(address);
+        return code !== '0x';
+    } catch {
+        return false;
+    }
+};
+
+/**
  * 初始化 CLOB Client（和主程序保持一致）
  */
 const initClient = async (): Promise<ClobClient> => {
-    const provider = new ethers.providers.JsonRpcProvider(CONFIG.RPC_URL);
-    const wallet = new ethers.Wallet(CONFIG.PRIVATE_KEY, provider);
+    // 检测钱包类型
+    const isProxySafe = CONFIG.PROXY_WALLET ? await isGnosisSafe(CONFIG.PROXY_WALLET) : false;
+    const signatureType = isProxySafe ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
     
-    // 用于签名订单的 wallet（如果有 proxy，使用单独的 signer）
-    const clobWallet = CONFIG.PROXY_WALLET 
-        ? new ethers.Wallet(CONFIG.PRIVATE_KEY, provider)
-        : wallet;
+    log.info(`钱包类型: ${isProxySafe ? 'Gnosis Safe' : 'EOA'}`);
     
-    // 先创建临时 client 获取 API Key
-    const tempClient = new ClobClient(
+    // 使用不带 provider 的 wallet（CLOB client 需要）
+    const clobWallet = new ethers.Wallet(CONFIG.PRIVATE_KEY);
+    
+    // 创建临时 client 获取 API Key
+    let client = new ClobClient(
         CONFIG.CLOB_HTTP_URL,
         CONFIG.CHAIN_ID,
-        wallet,
+        clobWallet,
         undefined,
-        CONFIG.PROXY_WALLET ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA,
-        CONFIG.PROXY_WALLET || undefined
+        signatureType,
+        isProxySafe ? CONFIG.PROXY_WALLET : undefined
     );
     
-    // 获取 API Key（静默处理错误）
+    // 获取 API Key
     let creds: any;
     try {
-        creds = await tempClient.createApiKey();
+        creds = await client.createApiKey();
     } catch {
-        // createApiKey 失败，尝试 deriveApiKey
+        // createApiKey 失败
     }
     
     if (!creds?.key) {
         try {
-            creds = await tempClient.deriveApiKey();
+            creds = await client.deriveApiKey();
         } catch {
             // deriveApiKey 也失败
         }
@@ -88,16 +102,14 @@ const initClient = async (): Promise<ClobClient> => {
     }
     
     // 使用 API Key 创建正式 client
-    const client = new ClobClient(
+    return new ClobClient(
         CONFIG.CLOB_HTTP_URL,
         CONFIG.CHAIN_ID,
         clobWallet,
         creds,
-        CONFIG.PROXY_WALLET ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA,
-        CONFIG.PROXY_WALLET || undefined
+        signatureType,
+        isProxySafe ? CONFIG.PROXY_WALLET : undefined
     );
-    
-    return client;
 };
 
 /**

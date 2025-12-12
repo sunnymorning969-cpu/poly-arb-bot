@@ -102,9 +102,9 @@ const saveConfig = (config: Record<string, string>): void => {
         `BINANCE_CHECK_WINDOW_SEC=${config.BINANCE_CHECK_WINDOW_SEC || '60'}`,
         `BINANCE_MIN_VOLATILITY_PERCENT=${config.BINANCE_MIN_VOLATILITY_PERCENT || '0.1'}`,
         '',
-        '# 同池增持策略（利用平均持仓价在同池内套利，减少止损亏损）',
+        '# 同池增持策略（利用平均持仓价在同池内平衡，允许少量亏损换取成交）',
         `SAME_POOL_REBALANCE_ENABLED=${config.SAME_POOL_REBALANCE_ENABLED || 'true'}`,
-        `SAME_POOL_SAFETY_MARGIN=${config.SAME_POOL_SAFETY_MARGIN || '3'}`,
+        `SAME_POOL_SAFETY_MARGIN=${config.SAME_POOL_SAFETY_MARGIN || '2'}`,
         '',
         '# 紧急平衡（最后X秒停止跨池，放宽同池限制）',
         `EMERGENCY_BALANCE_ENABLED=${config.EMERGENCY_BALANCE_ENABLED || 'true'}`,
@@ -250,7 +250,7 @@ const main = async () => {
     }
     
     const currentPriceTolerance = config.PRICE_TOLERANCE_PERCENT || '0.5';
-    const priceTolerance = await question(`出价容忍度 % (提高成交率, 当前: ${currentPriceTolerance}): `);
+    const priceTolerance = await question(`同池出价容忍度 % (仅同池套利加价提高成交率, 当前: ${currentPriceTolerance}): `);
     if (priceTolerance && !isNaN(parseFloat(priceTolerance))) {
         config.PRICE_TOLERANCE_PERCENT = priceTolerance;
     } else if (!config.PRICE_TOLERANCE_PERCENT) {
@@ -523,17 +523,18 @@ const main = async () => {
         log.info('═══════════════════════════════════════════════════════');
         log.info('同池安全边际 - 确保平均组合成本 < 1');
         log.info('');
-        log.info('  买入条件：平均持仓价 + 深度价格 < 1 - 安全边际');
+        log.info('  公式：最高可买价 = (1 - 平均持仓价) × (1 + 安全边际%)');
         log.info('');
         log.info('  示例（安全边际 2%）：');
         log.info('    持仓 Up 平均 $0.45');
-        log.info('    最高可接受 Down 价格 = 1 - 0.02 - 0.45 = $0.53');
-        log.info('    深度价格 $0.52 ✅ 可买   深度价格 $0.54 ❌ 跳过');
+        log.info('    最高可接受 Down 价格 = 0.55 × 1.02 = $0.561');
+        log.info('    组合成本 = 0.45 + 0.561 = $1.011（允许亏1.1%换取平衡）');
         log.info('');
-        log.info('  建议：2-3%（确保最终组合成本低于 1）');
+        log.info('  建议：1-2%（牺牲少量利润换取更高成交率）');
+        log.info('  说明：跨池已有5-6%利润，同池亏2%后仍有3-4%总利润');
         log.info('═══════════════════════════════════════════════════════');
-        const currentSafetyMargin = config.SAME_POOL_SAFETY_MARGIN || '3';
-        const safetyMargin = await question(`同池安全边际 % (当前: ${currentSafetyMargin}): `);
+        const currentSafetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
+        const safetyMargin = await question(`同池允许亏损 % (当前: ${currentSafetyMargin}): `);
         if (safetyMargin && !isNaN(parseFloat(safetyMargin))) {
             config.SAME_POOL_SAFETY_MARGIN = safetyMargin;
         } else if (!config.SAME_POOL_SAFETY_MARGIN) {
@@ -706,7 +707,9 @@ const main = async () => {
     console.log(`     同池增持: ${config.SAME_POOL_REBALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
     if (config.SAME_POOL_REBALANCE_ENABLED === 'true') {
         const safetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
-        console.log(`     安全边际: ${safetyMargin}%（组合价 < ${(1 - parseFloat(safetyMargin)/100).toFixed(2)} 才买入）`);
+        const priceTolerance = config.PRICE_TOLERANCE_PERCENT || '0.5';
+        console.log(`     允许亏损: ${safetyMargin}%（牺牲利润换取平衡成交）`);
+        console.log(`     出价加价: ${priceTolerance}%（仅同池，提高成交率）`);
         console.log(`     紧急平衡: ${config.EMERGENCY_BALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
         if (config.EMERGENCY_BALANCE_ENABLED === 'true') {
             const emergencySec = config.EMERGENCY_BALANCE_SECONDS || '20';
