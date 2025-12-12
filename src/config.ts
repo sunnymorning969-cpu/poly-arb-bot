@@ -51,6 +51,10 @@ export const CONFIG = {
     // 例如：扫描到 $0.60，容忍度 1%，实际出价 $0.606
     PRICE_TOLERANCE_PERCENT: parseFloat(process.env.PRICE_TOLERANCE_PERCENT || '0.5'),
     
+    // 跨池套利单边最低价格：两边价格都必须 >= 此值才做跨池套利
+    // 避免在走势极端时（如 BTC Down $0.10）进行高风险套利
+    MIN_CROSS_POOL_SINGLE_PRICE: parseFloat(process.env.MIN_CROSS_POOL_SINGLE_PRICE || '0.25'),
+    
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     

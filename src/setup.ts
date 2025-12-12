@@ -81,6 +81,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `PRICE_TOLERANCE_PERCENT=${config.PRICE_TOLERANCE_PERCENT || '0.5'}`,
+        `MIN_CROSS_POOL_SINGLE_PRICE=${config.MIN_CROSS_POOL_SINGLE_PRICE || '0.25'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
         `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '6'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
@@ -254,6 +255,14 @@ const main = async () => {
         config.PRICE_TOLERANCE_PERCENT = priceTolerance;
     } else if (!config.PRICE_TOLERANCE_PERCENT) {
         config.PRICE_TOLERANCE_PERCENT = '0.5';
+    }
+    
+    const currentMinSinglePrice = config.MIN_CROSS_POOL_SINGLE_PRICE || '0.25';
+    const minSinglePrice = await question(`跨池单边最低价格 (低于此值跳过, 当前: ${currentMinSinglePrice}): `);
+    if (minSinglePrice && !isNaN(parseFloat(minSinglePrice))) {
+        config.MIN_CROSS_POOL_SINGLE_PRICE = minSinglePrice;
+    } else if (!config.MIN_CROSS_POOL_SINGLE_PRICE) {
+        config.MIN_CROSS_POOL_SINGLE_PRICE = '0.25';
     }
     
     const currentMinProfit = config.MIN_PROFIT_USD || '0.01';
@@ -666,6 +675,7 @@ const main = async () => {
     console.log(`  💰 交易参数:`);
     console.log(`     单笔最大: $${config.MAX_ORDER_SIZE_USD}`);
     console.log(`     出价容忍度: ${config.PRICE_TOLERANCE_PERCENT}%`);
+    console.log(`     跨池单边最低价: $${config.MIN_CROSS_POOL_SINGLE_PRICE}`);
     console.log(`     最小利润额: $${config.MIN_PROFIT_USD}`);
     console.log(`     最小利润率: ${config.MIN_ARBITRAGE_PERCENT}%`);
     const initial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';

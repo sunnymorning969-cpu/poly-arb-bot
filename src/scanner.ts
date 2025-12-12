@@ -542,6 +542,17 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         // ============ 核心套利条件 ============
         const isRealArbitrage = crossPoolCost < 0.995;
         
+        // 跨池套利单边最低价格检查：避免在走势极端时进行高风险套利
+        // 例如：BTC Down $0.10 + ETH Up $0.80 = $0.90 看起来有利可图
+        // 但 BTC Down $0.10 说明市场认为 BTC 涨的概率 90%，风险极高
+        const upPriceTooLow = cheapestUp.upBook.bestAsk < CONFIG.MIN_CROSS_POOL_SINGLE_PRICE;
+        const downPriceTooLow = cheapestDown.downBook.bestAsk < CONFIG.MIN_CROSS_POOL_SINGLE_PRICE;
+        
+        if (isCrossPool && (upPriceTooLow || downPriceTooLow)) {
+            // 跨池套利时，任何一边价格太低都跳过
+            continue;
+        }
+        
         // 预测组合买入后的成本
         // 注意：$1 最低限制在 executor.ts 中检查，scanner 只负责发现机会
         const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
