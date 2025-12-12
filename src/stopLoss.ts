@@ -21,7 +21,7 @@
 import CONFIG from './config';
 import Logger from './logger';
 import { orderBookManager, OrderBookData } from './orderbook-ws';
-import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss, getAssetAvgPrices, getGroupCostAnalysis } from './positions';
+import { getAllPositions, Position, getTimeGroup, TimeGroup, settleStopLoss, getAssetAvgPrices, getGroupCostAnalysis, recordSell } from './positions';
 import { notifyStopLoss } from './telegram';
 import { isHedgeCompleted, isHedging } from './hedging';
 import { isBtcVolatilityTooLow, getBtcChangeInfo } from './binance';
@@ -95,6 +95,7 @@ interface MarketTokens {
     upTokenId: string;
     downTokenId: string;
     endDate: string;
+    conditionId: string;  // 用于 recordSell
 }
 
 // Token 映射缓存（从 scanner 获取）- 每个 timeGroup 存储 BTC 和 ETH 两个市场
@@ -302,14 +303,15 @@ export const updateTokenMap = (
     upTokenId: string,
     downTokenId: string,
     endDate: string,
-    asset: 'btc' | 'eth'
+    asset: 'btc' | 'eth',
+    conditionId: string
 ): void => {
     let entry = tokenMapCache.get(timeGroup);
     if (!entry) {
         entry = {};
         tokenMapCache.set(timeGroup, entry);
     }
-    entry[asset] = { upTokenId, downTokenId, endDate };
+    entry[asset] = { upTokenId, downTokenId, endDate, conditionId };
 };
 
 // 记录已执行止损的 timeGroup（防止重复执行）
@@ -1078,6 +1080,8 @@ export const executeExtremeImbalanceSell = async (
         if (result.success) {
             totalReceived += result.received;
             totalSold += signal.btcUpToSell;
+            // 更新仓位记录
+            recordSell(markets.btc.conditionId, 'up', signal.btcUpToSell, result.received);
         }
     }
     
@@ -1092,6 +1096,8 @@ export const executeExtremeImbalanceSell = async (
         if (result.success) {
             totalReceived += result.received;
             totalSold += signal.btcDownToSell;
+            // 更新仓位记录
+            recordSell(markets.btc.conditionId, 'down', signal.btcDownToSell, result.received);
         }
     }
     
@@ -1106,6 +1112,8 @@ export const executeExtremeImbalanceSell = async (
         if (result.success) {
             totalReceived += result.received;
             totalSold += signal.ethUpToSell;
+            // 更新仓位记录
+            recordSell(markets.eth.conditionId, 'up', signal.ethUpToSell, result.received);
         }
     }
     
@@ -1120,6 +1128,8 @@ export const executeExtremeImbalanceSell = async (
         if (result.success) {
             totalReceived += result.received;
             totalSold += signal.ethDownToSell;
+            // 更新仓位记录
+            recordSell(markets.eth.conditionId, 'down', signal.ethDownToSell, result.received);
         }
     }
     

@@ -411,7 +411,7 @@ export const fetchCryptoMarkets = async (): Promise<PolymarketMarket[]> => {
                 const timeGroup = getTimeGroup(market.slug);
                 const isBtc = market.slug.includes('btc') || market.slug.includes('bitcoin');
                 const asset = isBtc ? 'btc' : 'eth';
-                updateTokenMap(timeGroup, upToken.token_id, downToken.token_id, market.end_date_iso, asset);
+                updateTokenMap(timeGroup, upToken.token_id, downToken.token_id, market.end_date_iso, asset, market.condition_id);
             }
         }
         

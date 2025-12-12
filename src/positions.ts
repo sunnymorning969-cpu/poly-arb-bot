@@ -116,6 +116,64 @@ export const updatePosition = (
     saveToStorage(pos);
 };
 
+// 提前平仓收回的总金额（用于计入总收益）
+let totalEarlySellReceived = 0;
+
+/**
+ * 记录卖出（减少仓位）
+ * 用于极端不平衡时提前平仓
+ */
+export const recordSell = (
+    conditionId: string,
+    side: 'up' | 'down',
+    shares: number,
+    received: number
+): void => {
+    const pos = positions.get(conditionId);
+    if (!pos) {
+        Logger.warning(`[recordSell] 仓位不存在: ${conditionId}`);
+        return;
+    }
+    
+    if (side === 'up') {
+        // 按比例减少成本
+        const costRatio = pos.upShares > 0 ? shares / pos.upShares : 0;
+        const costReduction = pos.upCost * costRatio;
+        pos.upShares = Math.max(0, pos.upShares - shares);
+        pos.upCost = Math.max(0, pos.upCost - costReduction);
+    } else {
+        const costRatio = pos.downShares > 0 ? shares / pos.downShares : 0;
+        const costReduction = pos.downCost * costRatio;
+        pos.downShares = Math.max(0, pos.downShares - shares);
+        pos.downCost = Math.max(0, pos.downCost - costReduction);
+    }
+    
+    pos.lastUpdate = Date.now();
+    positions.set(conditionId, pos);
+    
+    // 累计提前平仓收回的金额
+    totalEarlySellReceived += received;
+    
+    // 保存到持久化存储
+    saveToStorage(pos);
+    
+    Logger.info(`📉 [卖出记录] ${side.toUpperCase()} ${shares.toFixed(2)} shares, 收回 $${received.toFixed(2)}`);
+};
+
+/**
+ * 获取提前平仓收回的总金额
+ */
+export const getEarlySellReceived = (): number => {
+    return totalEarlySellReceived;
+};
+
+/**
+ * 重置提前平仓收回金额（新事件开始时）
+ */
+export const resetEarlySellReceived = (): void => {
+    totalEarlySellReceived = 0;
+};
+
 /**
  * 获取仓位不平衡度
  * 返回需要买入的方向和数量
@@ -993,6 +1051,9 @@ export default {
     loadPositionsFromStorage,
     getPosition,
     updatePosition,
+    recordSell,
+    getEarlySellReceived,
+    resetEarlySellReceived,
     getImbalance,
     getAllPositions,
     getPositionStats,
