@@ -402,34 +402,64 @@ const executeBuy = async (
         price: orderPrice 
     };
     
-    // 重试逻辑：最多 3 次，每次间隔 0.5 秒
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY_MS = 500;
+    // 保存原始 console 方法，用于静默 CLOB Client 日志
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
     
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    // 静默执行函数
+    const silentExec = async () => {
+        console.log = () => {};
+        console.error = () => {};
+        console.warn = () => {};
         try {
             const signedOrder = await client.createMarketOrder(orderArgs);
             const resp = await client.postOrder(signedOrder, OrderType.FAK);
-            
-            if (resp.success) {
-                Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
-                return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
-            }
-            
-            // 失败但不打印日志，直接重试
-            if (attempt < MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-            }
-        } catch (error) {
-            // 出错也重试
-            if (attempt < MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            return resp;
+        } finally {
+            console.log = originalLog;
+            console.error = originalError;
+            console.warn = originalWarn;
+        }
+    };
+    
+    // 第一次尝试
+    try {
+        const resp = await silentExec();
+        if (resp.success) {
+            Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
+            return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
+        }
+        // FAK 订单 resp.success=false 说明没有匹配单，不重试
+        return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+    } catch (error: any) {
+        // 只对 500 服务器错误重试，400 客户端错误直接放弃
+        const status = error?.response?.status || error?.status;
+        if (status === 400) {
+            // 400 = 订单簿没单或参数错误，重试没用
+            return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+        }
+        
+        // 500 或其他错误，重试最多2次（加上第一次共3次）
+        for (let retry = 1; retry <= 2; retry++) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            try {
+                const resp = await silentExec();
+                if (resp.success) {
+                    Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
+                    return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
+                }
+                return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+            } catch (retryError: any) {
+                const retryStatus = retryError?.response?.status || retryError?.status;
+                if (retryStatus === 400) {
+                    return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+                }
+                // 继续重试
             }
         }
+        return { success: false, filled: 0, avgPrice: 0, cost: 0 };
     }
-    
-    // 3 次都失败，静默返回
-    return { success: false, filled: 0, avgPrice: 0, cost: 0 };
 };
 
 /**
@@ -764,6 +794,7 @@ export const executeArbitrage = async (
 
 /**
  * 执行卖出（用于止损）
+ * 静默重试3次
  */
 export const executeSell = async (
     tokenId: string,
@@ -778,39 +809,80 @@ export const executeSell = async (
         return { success: true, received };
     }
     
-    try {
-        const client = await initClient();
-        
-        // 稍微低于 bid 价格确保成交
-        const sellPrice = Math.max(0.01, bidPrice * 0.995);
-        const amountUSD = shares * sellPrice;
-        
-        // Polymarket 最小订单金额 $1
-        if (amountUSD < CONFIG.MIN_ORDER_AMOUNT_USD) {
-            Logger.warning(`⏭️ [卖出] ${label}: 金额 $${amountUSD.toFixed(2)} < $1 最小限制，跳过`);
-            return { success: false, received: 0 };
+    const client = await initClient();
+    
+    // 稍微低于 bid 价格确保成交
+    const sellPrice = Math.max(0.01, bidPrice * 0.995);
+    const amountUSD = shares * sellPrice;
+    
+    // Polymarket 最小订单金额 $1
+    if (amountUSD < CONFIG.MIN_ORDER_AMOUNT_USD) {
+        return { success: false, received: 0 };
+    }
+    
+    const orderArgs = {
+        side: Side.SELL,
+        tokenID: tokenId,
+        amount: amountUSD,
+        price: sellPrice,
+    };
+    
+    // 保存原始 console 方法，用于静默 CLOB Client 日志
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    
+    // 静默执行函数
+    const silentExec = async () => {
+        console.log = () => {};
+        console.error = () => {};
+        console.warn = () => {};
+        try {
+            const signedOrder = await client.createMarketOrder(orderArgs);
+            const resp = await client.postOrder(signedOrder, OrderType.FAK);
+            return resp;
+        } finally {
+            console.log = originalLog;
+            console.error = originalError;
+            console.warn = originalWarn;
         }
-        
-        const orderArgs = {
-            side: Side.SELL,
-            tokenID: tokenId,
-            amount: amountUSD,
-            price: sellPrice,
-        };
-        
-        const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FAK);
-        
+    };
+    
+    // 第一次尝试
+    try {
+        const resp = await silentExec();
         if (resp.success) {
             const received = shares * sellPrice;
             Logger.success(`✅ [卖出] ${label}: ${shares.toFixed(2)} shares @ $${sellPrice.toFixed(3)} = $${received.toFixed(2)}`);
             return { success: true, received };
         }
-        
-        Logger.warning(`❌ [卖出失败] ${label}: ${resp.errorMsg || '未知错误'}`);
+        // FAK 订单 resp.success=false 说明没有匹配单，不重试
         return { success: false, received: 0 };
     } catch (error: any) {
-        Logger.error(`❌ [卖出错误] ${label}: ${error.message || error}`);
+        // 只对 500 服务器错误重试，400 客户端错误直接放弃
+        const status = error?.response?.status || error?.status;
+        if (status === 400) {
+            return { success: false, received: 0 };
+        }
+        
+        // 500 或其他错误，重试最多2次
+        for (let retry = 1; retry <= 2; retry++) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            try {
+                const resp = await silentExec();
+                if (resp.success) {
+                    const received = shares * sellPrice;
+                    Logger.success(`✅ [卖出] ${label}: ${shares.toFixed(2)} shares @ $${sellPrice.toFixed(3)} = $${received.toFixed(2)}`);
+                    return { success: true, received };
+                }
+                return { success: false, received: 0 };
+            } catch (retryError: any) {
+                const retryStatus = retryError?.response?.status || retryError?.status;
+                if (retryStatus === 400) {
+                    return { success: false, received: 0 };
+                }
+            }
+        }
         return { success: false, received: 0 };
     }
 };
