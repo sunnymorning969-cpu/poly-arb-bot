@@ -44,6 +44,9 @@ export const CONFIG = {
     ENABLE_1HR: process.env.ENABLE_1HR !== '0',
     
     // ========== 交易参数 ==========
+    // Polymarket 最小订单金额（平台硬性要求，不可修改）
+    MIN_ORDER_AMOUNT_USD: 1.0,
+    
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     

@@ -385,6 +385,14 @@ const executeBuy = async (
         
         // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
         const amount = shares * orderPrice;
+        
+        // Polymarket 最小订单金额是 $1，如果不足则跳过（由 scanner 层面保证）
+        const MIN_ORDER_AMOUNT = 1.0;
+        if (amount < MIN_ORDER_AMOUNT) {
+            Logger.warning(`⏭️ ${outcome}: 订单金额 $${amount.toFixed(2)} < $1 最小限制，跳过`);
+            return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+        }
+        
         const orderArgs = { 
             side: Side.BUY, 
             tokenID: tokenId, 
@@ -392,7 +400,7 @@ const executeBuy = async (
             price: orderPrice 
         };
         const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FOK);
+        const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
             Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
@@ -485,10 +493,27 @@ export const executeArbitrage = async (
         const combinedCost = opportunity.upAskPrice + opportunity.downAskPrice;
         const totalCostNeeded = targetShares * combinedCost;
         
+        // Polymarket 最小订单金额 $1：计算两边各自满足 $1 所需的最少 shares
+        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice);
+        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice);
+        const minSharesRequired = Math.max(minSharesForUp, minSharesForDown);
+        
         // 检查是否超过最大订单限制，如果超过则按比例缩小 shares
         if (totalCostNeeded > CONFIG.MAX_ORDER_SIZE_USD * 2) {
             const maxAffordableShares = (CONFIG.MAX_ORDER_SIZE_USD * 2) / combinedCost;
             targetShares = maxAffordableShares;
+        }
+        
+        // 确保 targetShares 满足两边都 >= $1 的要求
+        // 如果 targetShares 太小，说明 MAX_ORDER_SIZE_USD 设置得太低
+        if (targetShares < minSharesRequired) {
+            // 深度足够，但预算限制导致不满足最小金额，需要增加 shares
+            targetShares = minSharesRequired;
+            // 再次检查深度是否支持
+            if (minSharesRequired > maxUpShares || minSharesRequired > maxDownShares) {
+                Logger.warning(`⚠️ 深度不足满足$1最低: 需${minSharesRequired}股, Up=${maxUpShares.toFixed(1)} Down=${maxDownShares.toFixed(1)}`);
+                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+            }
         }
         
         // 计算预期利润，如果太小就跳过
@@ -507,6 +532,8 @@ export const executeArbitrage = async (
     } else if (action === 'buy_up_only') {
         // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
         // 普通交易：90% 深度，有金额限制
+        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice);
+        
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
             // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
             upShares = Math.min(opportunity.maxShares, opportunity.upAskSize);
@@ -514,6 +541,16 @@ export const executeArbitrage = async (
             const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.upAskPrice;
             upShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        }
+        
+        // 确保满足 Polymarket $1 最低要求
+        if (upShares < minSharesForUp) {
+            upShares = minSharesForUp;
+            // 检查深度是否支持
+            if (minSharesForUp > opportunity.upAskSize) {
+                Logger.warning(`⚠️ Up 深度不足满足$1最低: 需${minSharesForUp}股, 有${opportunity.upAskSize.toFixed(1)}`);
+                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+            }
         }
         
         if (upShares < 1) {
@@ -528,6 +565,8 @@ export const executeArbitrage = async (
     } else if (action === 'buy_down_only') {
         // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
         // 普通交易：90% 深度，有金额限制
+        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice);
+        
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
             // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
             downShares = Math.min(opportunity.maxShares, opportunity.downAskSize);
@@ -535,6 +574,16 @@ export const executeArbitrage = async (
             const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
             const maxSharesByBudget = CONFIG.MAX_ORDER_SIZE_USD / opportunity.downAskPrice;
             downShares = Math.min(maxSharesByDepth, maxSharesByBudget);
+        }
+        
+        // 确保满足 Polymarket $1 最低要求
+        if (downShares < minSharesForDown) {
+            downShares = minSharesForDown;
+            // 检查深度是否支持
+            if (minSharesForDown > opportunity.downAskSize) {
+                Logger.warning(`⚠️ Down 深度不足满足$1最低: 需${minSharesForDown}股, 有${opportunity.downAskSize.toFixed(1)}`);
+                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+            }
         }
         
         if (downShares < 1) {
@@ -562,6 +611,17 @@ export const executeArbitrage = async (
     
     let upResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
     let downResult = { success: false, filled: 0, avgPrice: 0, cost: 0 };
+    
+    // 🔒 下单前预验证：确保两边金额都 >= $1，避免单边被拒绝导致仓位不平衡
+    if (action === 'buy_both' && upShares > 0 && downShares > 0) {
+        const upAmount = upShares * opportunity.upAskPrice;
+        const downAmount = downShares * opportunity.downAskPrice;
+        
+        if (upAmount < CONFIG.MIN_ORDER_AMOUNT_USD || downAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
+            Logger.warning(`⚠️ 跳过: Up=$${upAmount.toFixed(2)} Down=$${downAmount.toFixed(2)} 有一边<$1`);
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
+    }
     
     // 并行执行下单（传入 shares 数量）
     const promises: Promise<any>[] = [];
@@ -733,6 +793,12 @@ export const executeSell = async (
         const sellPrice = Math.max(0.01, bidPrice * 0.995);
         const amountUSD = shares * sellPrice;
         
+        // Polymarket 最小订单金额 $1
+        if (amountUSD < CONFIG.MIN_ORDER_AMOUNT_USD) {
+            Logger.warning(`⏭️ [卖出] ${label}: 金额 $${amountUSD.toFixed(2)} < $1 最小限制，跳过`);
+            return { success: false, received: 0 };
+        }
+        
         const orderArgs = {
             side: Side.SELL,
             tokenID: tokenId,
@@ -741,7 +807,7 @@ export const executeSell = async (
         };
         
         const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FOK);
+        const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
             const received = shares * sellPrice;

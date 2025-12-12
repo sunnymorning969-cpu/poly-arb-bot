@@ -543,7 +543,21 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const isRealArbitrage = crossPoolCost < 0.995;
         
         // 预测组合买入后的成本
-        const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
+        // 计算满足 Polymarket $1 最小订单要求的最少 shares
+        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / cheapestUp.upBook.bestAsk);
+        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / cheapestDown.downBook.bestAsk);
+        const minSharesRequired = Math.max(minSharesForUp, minSharesForDown);
+        
+        // maxShares 必须同时满足深度限制和最小金额要求
+        const depthShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
+        const maxShares = Math.max(depthShares, minSharesRequired);
+        
+        // 如果深度不足以满足最小要求，跳过此机会
+        if (cheapestUp.upBook.bestAskSize < minSharesForUp || cheapestDown.downBook.bestAskSize < minSharesForDown) {
+            // 深度不够，无法下达 $1 以上的订单
+            continue;
+        }
+        
         const groupPrediction = predictGroupCostAfterBuy(
             timeGroup,
             maxShares,
