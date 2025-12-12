@@ -543,13 +543,25 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const isRealArbitrage = crossPoolCost < 0.995;
         
         // 跨池套利单边最低价格检查：避免在走势极端时进行高风险套利
-        // 例如：BTC Down $0.10 + ETH Up $0.80 = $0.90 看起来有利可图
-        // 但 BTC Down $0.10 说明市场认为 BTC 涨的概率 90%，风险极高
         const upPriceTooLow = cheapestUp.upBook.bestAsk < CONFIG.MIN_CROSS_POOL_SINGLE_PRICE;
         const downPriceTooLow = cheapestDown.downBook.bestAsk < CONFIG.MIN_CROSS_POOL_SINGLE_PRICE;
         
+        // 调试日志：每10秒输出一次当前价格状态
+        const debugKey = `crosspool_${timeGroup}`;
+        const lastDebug = scanCooldown.get(debugKey) || 0;
+        const now = Date.now();
+        if (now - lastDebug >= 10000) {
+            scanCooldown.set(debugKey, now);
+            const upAsset = cheapestUp.market.slug.toLowerCase().includes('btc') ? 'BTC' : 'ETH';
+            const downAsset = cheapestDown.market.slug.toLowerCase().includes('btc') ? 'BTC' : 'ETH';
+            Logger.info(`🔍 [${timeGroup}] ${upAsset}↑$${cheapestUp.upBook.bestAsk.toFixed(2)}(${cheapestUp.upBook.bestAskSize.toFixed(0)}) + ${downAsset}↓$${cheapestDown.downBook.bestAsk.toFixed(2)}(${cheapestDown.downBook.bestAskSize.toFixed(0)}) = $${crossPoolCost.toFixed(3)} | 利润${crossPoolProfit.toFixed(1)}%`);
+        }
+        
         if (isCrossPool && (upPriceTooLow || downPriceTooLow)) {
             // 跨池套利时，任何一边价格太低都跳过
+            if (now - lastDebug < 1000) { // 刚输出过价格，补充跳过原因
+                Logger.warning(`   ⚠️ 跳过: 单边价格 < ${CONFIG.MIN_CROSS_POOL_SINGLE_PRICE} (${upPriceTooLow ? 'Up' : 'Down'}太低)`);
+            }
             continue;
         }
         
