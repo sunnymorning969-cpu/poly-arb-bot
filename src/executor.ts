@@ -442,9 +442,15 @@ const executeBuy = async (
         const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
-            // 订单成功，返回预期值（实际成交量由 API 同步校正）
-            Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
-            return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
+            // 🔧 修复：使用 API 返回的实际成交数量，而不是请求数量
+            // takingAmount 是买到的 shares（单位：10^6）
+            // makingAmount 是支付的 USDC（单位：10^6）
+            const actualShares = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares;
+            const actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
+            const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
+            
+            Logger.success(`✅ ${outcome}: ${actualShares.toFixed(2)} shares @ $${actualAvgPrice.toFixed(3)}`);
+            return { success: true, filled: actualShares, avgPrice: actualAvgPrice, cost: actualCost };
         }
         // FAK 订单 resp.success=false 说明没有匹配单
         Logger.warning(`❌ ${outcome}: 无匹配单`);
@@ -470,8 +476,13 @@ const executeBuy = async (
                 const signedOrder = await client.createMarketOrder(orderArgs);
                 const resp = await client.postOrder(signedOrder, OrderType.FAK);
                 if (resp.success) {
-                    Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
-                    return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
+                    // 🔧 修复：使用 API 返回的实际成交数量
+                    const actualShares = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares;
+                    const actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
+                    const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
+                    
+                    Logger.success(`✅ ${outcome}: ${actualShares.toFixed(2)} shares @ $${actualAvgPrice.toFixed(3)}`);
+                    return { success: true, filled: actualShares, avgPrice: actualAvgPrice, cost: actualCost };
                 }
             } catch (retryErr) {
                 // 重试也失败
@@ -904,9 +915,12 @@ export const executeSell = async (
         const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
-            const received = shares * sellPrice;
-            Logger.success(`✅ [卖出] ${label}: ${shares.toFixed(2)} shares @ $${sellPrice.toFixed(3)} = $${received.toFixed(2)}`);
-            return { success: true, received };
+            // 🔧 修复：使用 API 返回的实际成交数量
+            // SELL 订单：takingAmount 是收到的 USDC，makingAmount 是卖出的 shares
+            const actualReceived = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares * sellPrice;
+            const actualSold = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : shares;
+            Logger.success(`✅ [卖出] ${label}: ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
+            return { success: true, received: actualReceived };
         }
         Logger.warning(`❌ [卖出] ${label}: 无匹配单`);
         return { success: false, received: 0 };
@@ -920,9 +934,11 @@ export const executeSell = async (
                 const signedOrder = await client.createMarketOrder(orderArgs);
                 const resp = await client.postOrder(signedOrder, OrderType.FAK);
                 if (resp.success) {
-                    const received = shares * sellPrice;
-                    Logger.success(`✅ [卖出] ${label}: ${shares.toFixed(2)} shares @ $${sellPrice.toFixed(3)} = $${received.toFixed(2)}`);
-                    return { success: true, received };
+                    // 🔧 修复：使用 API 返回的实际成交数量
+                    const actualReceived = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares * sellPrice;
+                    const actualSold = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : shares;
+                    Logger.success(`✅ [卖出] ${label}: ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
+                    return { success: true, received: actualReceived };
                 }
             } catch (retryErr) {
                 // 重试也失败

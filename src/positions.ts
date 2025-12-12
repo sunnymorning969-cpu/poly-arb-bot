@@ -1102,13 +1102,25 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         let created = 0;
         
         for (const [conditionId, apiPosGroup] of positionsByConditionId.entries()) {
-            // 只处理当前活跃的 15min/1hr 市场（通过 slug 判断）
             const firstPos = apiPosGroup[0];
             const slug = firstPos?.market || '';
             const title = firstPos?.title || '';
             
-            // 跳过非 updown 市场
-            if (!slug.includes('updown')) continue;
+            // 放宽过滤：只要包含 btc/eth 和 up/down 相关关键词就处理
+            const slugLower = slug.toLowerCase();
+            const titleLower = title.toLowerCase();
+            const isRelevant = (slugLower.includes('btc') || slugLower.includes('bitcoin') || 
+                               slugLower.includes('eth') || slugLower.includes('ethereum')) &&
+                              (slugLower.includes('up') || slugLower.includes('down') || 
+                               titleLower.includes('up') || titleLower.includes('down'));
+            
+            if (!isRelevant) {
+                // 打印跳过的仓位，方便调试
+                if (apiPosGroup.some(p => (p.size || 0) > 1)) {
+                    Logger.info(`   ⏭️ 跳过非相关市场: ${slug.slice(0, 40)} size=${apiPosGroup.map(p => p.size?.toFixed(1)).join('/')}`);
+                }
+                continue;
+            }
             
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;
@@ -1152,7 +1164,7 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 positions.set(conditionId, localPos);
                 saveToStorage(localPos);
                 created++;
-                Logger.success(`🔄 创建仓位 ${slug.slice(0, 25)}: Up=${apiUpShares.toFixed(1)} Down=${apiDownShares.toFixed(1)}`);
+                Logger.success(`🔄 创建仓位 ${slug.slice(0, 30)}: Up=${apiUpShares.toFixed(1)}@$${apiUpAvgPrice.toFixed(3)} Down=${apiDownShares.toFixed(1)}@$${apiDownAvgPrice.toFixed(3)}`);
             } else {
                 // 本地存在，检查是否需要校正
                 const upDiff = Math.abs(localPos.upShares - apiUpShares);
