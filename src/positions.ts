@@ -1096,18 +1096,19 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         Logger.info(`🔄 本地condId: ${localCondIds.join(', ')}`);
         Logger.info(`🔄 API condId: ${apiCondIds.join(', ')}${positionsByConditionId.size > 5 ? '...' : ''}`);
         
-        // 遍历本地仓位，用 conditionId 匹配 API 仓位
+        // 🔄 改进：遍历 API 返回的仓位，而不是本地仓位
+        // 这样可以创建本地不存在的仓位
         let synced = 0;
-        let matched = 0;
-        for (const localPos of positions.values()) {
-            // 用 conditionId 精确匹配
-            const apiPosGroup = positionsByConditionId.get(localPos.conditionId);
+        let created = 0;
+        
+        for (const [conditionId, apiPosGroup] of positionsByConditionId.entries()) {
+            // 只处理当前活跃的 15min/1hr 市场（通过 slug 判断）
+            const firstPos = apiPosGroup[0];
+            const slug = firstPos?.market || '';
+            const title = firstPos?.title || '';
             
-            if (!apiPosGroup) {
-                Logger.warning(`🔄 conditionId ${localPos.conditionId?.slice(0, 12)} 不匹配`);
-                continue;
-            }
-            matched++;
+            // 跳过非 updown 市场
+            if (!slug.includes('updown')) continue;
             
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;
@@ -1115,11 +1116,7 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             let apiUpAvgPrice = 0;
             let apiDownAvgPrice = 0;
             
-            // 调试：打印 API 返回的每个仓位
             for (const apiPos of apiPosGroup) {
-                Logger.info(`   📋 API[${localPos.slug.slice(0, 20)}]: outcome="${apiPos.outcome}" size=${apiPos.size?.toFixed(1)}`);
-                
-                // 兼容多种 outcome 格式：Yes/No, Up/Down, YES/NO
                 const outcomeUpper = (apiPos.outcome || '').toUpperCase();
                 const isUp = outcomeUpper === 'YES' || outcomeUpper === 'UP';
                 const isDown = outcomeUpper === 'NO' || outcomeUpper === 'DOWN';
@@ -1130,34 +1127,54 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 } else if (isDown) {
                     apiDownShares = apiPos.size || 0;
                     apiDownAvgPrice = apiPos.avgPrice || 0;
-                } else {
-                    Logger.warning(`   ⚠️ 未知outcome: "${apiPos.outcome}"`);
                 }
             }
             
-            // 检查是否有差异
-            const upDiff = Math.abs(localPos.upShares - apiUpShares);
-            const downDiff = Math.abs(localPos.downShares - apiDownShares);
+            // 跳过空仓位
+            if (apiUpShares < 0.1 && apiDownShares < 0.1) continue;
             
-            if (upDiff > 0.5 || downDiff > 0.5) {
-                Logger.warning(`🔄 仓位校正 ${localPos.slug.slice(0, 25)}: Up ${localPos.upShares.toFixed(1)}→${apiUpShares.toFixed(1)} Down ${localPos.downShares.toFixed(1)}→${apiDownShares.toFixed(1)}`);
-                
-                // 更新为真实值（同时更新 shares 和 cost）
-                localPos.upShares = apiUpShares;
-                localPos.downShares = apiDownShares;
-                // 用 API 返回的 avgPrice 重新计算 cost，保持平均价正确
-                localPos.upCost = apiUpShares * apiUpAvgPrice;
-                localPos.downCost = apiDownShares * apiDownAvgPrice;
-                localPos.lastUpdate = Date.now();
-                
-                // 保存到存储
+            // 查找本地仓位
+            let localPos = positions.get(conditionId);
+            
+            if (!localPos) {
+                // 本地不存在，创建新仓位
+                localPos = {
+                    conditionId,
+                    slug,
+                    title,
+                    upShares: apiUpShares,
+                    downShares: apiDownShares,
+                    upCost: apiUpShares * apiUpAvgPrice,
+                    downCost: apiDownShares * apiDownAvgPrice,
+                    lastUpdate: Date.now(),
+                    endDate: '',  // API 没有返回 endDate，后续会通过市场数据补充
+                };
+                positions.set(conditionId, localPos);
                 saveToStorage(localPos);
-                synced++;
+                created++;
+                Logger.success(`🔄 创建仓位 ${slug.slice(0, 25)}: Up=${apiUpShares.toFixed(1)} Down=${apiDownShares.toFixed(1)}`);
+            } else {
+                // 本地存在，检查是否需要校正
+                const upDiff = Math.abs(localPos.upShares - apiUpShares);
+                const downDiff = Math.abs(localPos.downShares - apiDownShares);
+                
+                if (upDiff > 0.5 || downDiff > 0.5) {
+                    Logger.warning(`🔄 仓位校正 ${localPos.slug.slice(0, 25)}: Up ${localPos.upShares.toFixed(1)}→${apiUpShares.toFixed(1)} Down ${localPos.downShares.toFixed(1)}→${apiDownShares.toFixed(1)}`);
+                    
+                    localPos.upShares = apiUpShares;
+                    localPos.downShares = apiDownShares;
+                    localPos.upCost = apiUpShares * apiUpAvgPrice;
+                    localPos.downCost = apiDownShares * apiDownAvgPrice;
+                    localPos.lastUpdate = Date.now();
+                    
+                    saveToStorage(localPos);
+                    synced++;
+                }
             }
         }
         
-        if (synced > 0) {
-            Logger.info(`🔄 API同步: 校正了 ${synced} 个仓位`);
+        if (created > 0 || synced > 0) {
+            Logger.info(`🔄 API同步: 创建 ${created} 个, 校正 ${synced} 个仓位`);
         }
     } catch (error: any) {
         Logger.error(`❌ API 同步失败: ${error.message || error}`);
