@@ -55,8 +55,8 @@ export interface ArbitrageOpportunity {
     downMarketSlug: string;      // Down 来自哪个市场
     downConditionId: string;     // Down 所在市场的 conditionId
     // 从订单簿获取的实时价格
-    upAskPrice: number;
-    downAskPrice: number;
+    upAskPrice: number;          // 最高可接受价格（同池增持用 maxPriceLevel）
+    downAskPrice: number;        // 最高可接受价格（同池增持用 maxPriceLevel）
     upAskSize: number;
     downAskSize: number;
     // 套利计算
@@ -316,7 +316,7 @@ async function fetchEventBySlug(slug: string): Promise<PolymarketMarket | null> 
                     return {
                         condition_id: market.conditionId,
                         question: market.question || event.title,
-                        slug: slug,
+                        slug: market.slug || slug,  // 优先使用 Polymarket 官方 slug
                         tokens,
                         end_date_iso: endDateIso,
                         active: market.active !== false,
@@ -1090,6 +1090,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // BTC 池：Up > Down，买入 Down
     if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
+        // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.downBook.asks || [];
         
         // 新公式：maxPrice = (1 - avgUpPrice) * (1 + safetyMargin)
@@ -1104,11 +1105,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             maxPriceLevel = (1 - btcUpAvgPrice) * (1 + safetyMargin);
         }
         
+        // 统计所有 <= maxPriceLevel 的深度（多档）
         let totalAvailableSize = 0;
         let weightedAvgPrice = 0;
         
         for (const level of asks) {
-            if (level.price < maxPriceLevel) {
+            if (level.price <= maxPriceLevel) {
                 totalAvailableSize += level.size;
                 weightedAvgPrice += level.price * level.size;
             }
@@ -1117,15 +1119,15 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
         const combinedCost = btcUpAvgPrice + avgAskPrice;
         
-        if (shouldLog && btcUpAvgPrice > 0) {
-            const levelsCount = asks.filter((l: any) => l.price < maxPriceLevel).length;
+        if (shouldLog && btcUpAvgPrice > 0 && totalAvailableSize > 0) {
+            const levelsCount = asks.filter((l: any) => l.price <= maxPriceLevel).length;
             const modeTag = emergency.isEmergency ? '🚨紧急' : '正常';
-            Logger.info(`   BTC同池[${modeTag}]: 平均Up $${btcUpAvgPrice.toFixed(3)} + 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
+            Logger.info(`   BTC同池[${modeTag}]: 平均Up $${btcUpAvgPrice.toFixed(3)} + ${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
         }
         
         // 检查金额是否 >= $1（不是股数）
         const totalAmount1 = totalAvailableSize * avgAskPrice;
-        if (totalAmount1 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcUpAvgPrice > 0) {
+        if (totalAvailableSize > 0 && totalAmount1 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcUpAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = avgPrices.btc.imbalance;
             const maxShares = Math.min(neededShares, totalAvailableSize);
@@ -1157,7 +1159,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     downMarketSlug: btcMarketData.market.slug,
                     downConditionId: btcMarketData.conditionId,
                     upAskPrice: 0,
-                    downAskPrice: maxPriceLevel,  // 使用最高允许价格，确保能吃到所有符合条件的深度
+                    downAskPrice: maxPriceLevel,  // 最高可接受价格，尽可能多吃深度
                     upAskSize: 0,
                     downAskSize: totalAvailableSize,
                     combinedCost,
@@ -1181,6 +1183,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // BTC 池：Down > Up，买入 Up
     if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
+        // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.upBook.asks || [];
         
         // 新公式：允许组合成本略微亏损，换取更高成交率
@@ -1191,11 +1194,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             maxPriceLevel = (1 - btcDownAvgPrice) * (1 + safetyMargin);
         }
         
+        // 统计所有 <= maxPriceLevel 的深度（多档）
         let totalAvailableSize = 0;
         let weightedAvgPrice = 0;
         
         for (const level of asks) {
-            if (level.price < maxPriceLevel) {
+            if (level.price <= maxPriceLevel) {
                 totalAvailableSize += level.size;
                 weightedAvgPrice += level.price * level.size;
             }
@@ -1206,7 +1210,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         
         // 检查金额是否 >= $1（不是股数）
         const totalAmount2 = totalAvailableSize * avgAskPrice;
-        if (totalAmount2 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcDownAvgPrice > 0) {
+        if (totalAvailableSize > 0 && totalAmount2 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcDownAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = Math.abs(avgPrices.btc.imbalance);
             const maxShares = Math.min(neededShares, totalAvailableSize);
@@ -1237,7 +1241,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     upMarketSlug: btcMarketData.market.slug,
                     downMarketSlug: btcMarketData.market.slug,
                     downConditionId: btcMarketData.conditionId,
-                    upAskPrice: maxPriceLevel,  // 使用最高允许价格
+                    upAskPrice: maxPriceLevel,  // 最高可接受价格，尽可能多吃深度
                     downAskPrice: 0,
                     upAskSize: totalAvailableSize,
                     downAskSize: 0,
@@ -1262,6 +1266,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：Down > Up，买入 Up
     if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
+        // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.upBook.asks || [];
         
         // 新公式：允许组合成本略微亏损，换取更高成交率
@@ -1272,11 +1277,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             maxPriceLevel = (1 - ethDownAvgPrice) * (1 + safetyMargin);
         }
         
+        // 统计所有 <= maxPriceLevel 的深度（多档）
         let totalAvailableSize = 0;
         let weightedAvgPrice = 0;
         
         for (const level of asks) {
-            if (level.price < maxPriceLevel) {
+            if (level.price <= maxPriceLevel) {
                 totalAvailableSize += level.size;
                 weightedAvgPrice += level.price * level.size;
             }
@@ -1285,15 +1291,15 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
         const combinedCost = avgAskPrice + ethDownAvgPrice;
         
-        if (shouldLog && ethDownAvgPrice > 0) {
-            const levelsCount = asks.filter((l: any) => l.price < maxPriceLevel).length;
+        if (shouldLog && ethDownAvgPrice > 0 && totalAvailableSize > 0) {
+            const levelsCount = asks.filter((l: any) => l.price <= maxPriceLevel).length;
             const modeTag = emergency.isEmergency ? '🚨紧急' : '正常';
-            Logger.info(`   ETH同池[${modeTag}]: 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
+            Logger.info(`   ETH同池[${modeTag}]: ${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
         }
         
         // 检查金额是否 >= $1（不是股数）
         const totalAmount3 = totalAvailableSize * avgAskPrice;
-        if (totalAmount3 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethDownAvgPrice > 0) {
+        if (totalAvailableSize > 0 && totalAmount3 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethDownAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = Math.abs(avgPrices.eth.imbalance);
             const maxShares = Math.min(neededShares, totalAvailableSize);
@@ -1324,7 +1330,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     upMarketSlug: ethMarketData.market.slug,
                     downMarketSlug: ethMarketData.market.slug,
                     downConditionId: ethMarketData.conditionId,
-                    upAskPrice: maxPriceLevel,  // 使用最高允许价格
+                    upAskPrice: maxPriceLevel,  // 最高可接受价格，尽可能多吃深度
                     downAskPrice: 0,
                     upAskSize: totalAvailableSize,
                     downAskSize: 0,
@@ -1349,6 +1355,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     // ETH 池：Up > Down，买入 Down
     if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
+        // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.downBook.asks || [];
         
         // 新公式：允许组合成本略微亏损，换取更高成交率
@@ -1359,11 +1366,12 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             maxPriceLevel = (1 - ethUpAvgPrice) * (1 + safetyMargin);
         }
         
+        // 统计所有 <= maxPriceLevel 的深度（多档）
         let totalAvailableSize = 0;
         let weightedAvgPrice = 0;
         
         for (const level of asks) {
-            if (level.price < maxPriceLevel) {
+            if (level.price <= maxPriceLevel) {
                 totalAvailableSize += level.size;
                 weightedAvgPrice += level.price * level.size;
             }
@@ -1374,7 +1382,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         
         // 检查金额是否 >= $1（不是股数）
         const totalAmount4 = totalAvailableSize * avgAskPrice;
-        if (totalAmount4 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethUpAvgPrice > 0) {
+        if (totalAvailableSize > 0 && totalAmount4 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethUpAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = avgPrices.eth.imbalance;
             const maxShares = Math.min(neededShares, totalAvailableSize);
@@ -1406,7 +1414,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     downMarketSlug: ethMarketData.market.slug,
                     downConditionId: ethMarketData.conditionId,
                     upAskPrice: 0,
-                    downAskPrice: maxPriceLevel,  // 使用最高允许价格
+                    downAskPrice: maxPriceLevel,  // 最高可接受价格，尽可能多吃深度
                     upAskSize: 0,
                     downAskSize: totalAvailableSize,
                     combinedCost,

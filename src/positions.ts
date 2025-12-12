@@ -1071,24 +1071,34 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             return;
         }
         
-        // 按 market slug 分组 API 仓位（更可靠的匹配方式）
-        const positionsBySlug = new Map<string, UserPosition[]>();
+        // 按 conditionId 分组 API 仓位
+        const positionsByConditionId = new Map<string, UserPosition[]>();
         for (const pos of apiPositions) {
-            const slug = pos.market || '';
-            if (!slug) continue;
-            const existing = positionsBySlug.get(slug) || [];
+            const condId = pos.conditionId || '';
+            if (!condId) continue;
+            const existing = positionsByConditionId.get(condId) || [];
             existing.push(pos);
-            positionsBySlug.set(slug, existing);
+            positionsByConditionId.set(condId, existing);
         }
         
-        // 遍历本地仓位，用 slug 匹配 API 仓位
+        // 打印调试信息
+        const localCondIds = Array.from(positions.values()).map(p => p.conditionId?.slice(0, 12));
+        const apiCondIds = Array.from(positionsByConditionId.keys()).slice(0, 5).map(id => id?.slice(0, 12));
+        Logger.info(`🔄 本地condId: ${localCondIds.join(', ')}`);
+        Logger.info(`🔄 API condId: ${apiCondIds.join(', ')}${positionsByConditionId.size > 5 ? '...' : ''}`);
+        
+        // 遍历本地仓位，用 conditionId 匹配 API 仓位
         let synced = 0;
+        let matched = 0;
         for (const localPos of positions.values()) {
-            const apiPosGroup = positionsBySlug.get(localPos.slug);
+            // 用 conditionId 精确匹配
+            const apiPosGroup = positionsByConditionId.get(localPos.conditionId);
+            
             if (!apiPosGroup) {
-                Logger.warning(`🔄 同步: ${localPos.slug.slice(0, 25)} 在API中找不到`);
+                Logger.warning(`🔄 conditionId ${localPos.conditionId?.slice(0, 12)} 不匹配`);
                 continue;
             }
+            matched++;
             
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;

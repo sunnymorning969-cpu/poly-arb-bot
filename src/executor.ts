@@ -371,31 +371,30 @@ const calculateOrderSize = (
 const executeBuy = async (
     tokenId: string,
     shares: number,           // shares 数量
-    cachedPrice: number,      // 使用 WebSocket 缓存的价格
+    limitPrice: number,       // 最高可接受价格（限价）
     outcome: string,
     isSamePool: boolean = false  // 是否为同池套利
 ): Promise<{ success: boolean; filled: number; avgPrice: number; cost: number }> => {
-    const askPrice = cachedPrice;
-    const estimatedCost = shares * askPrice;  // 预估成本
+    const estimatedCost = shares * limitPrice;
     
     // 模拟模式：直接返回成功
     if (CONFIG.SIMULATION_MODE) {
-        Logger.success(`🔵 [模拟] ${outcome}: ${shares.toFixed(2)} shares @ $${askPrice.toFixed(3)}`);
-        return { success: true, filled: shares, avgPrice: askPrice, cost: estimatedCost };
+        Logger.success(`🔵 [模拟] ${outcome}: ${shares.toFixed(2)} shares @ $${limitPrice.toFixed(3)}`);
+        return { success: true, filled: shares, avgPrice: limitPrice, cost: estimatedCost };
     }
     
     const client = await initClient();
     
-    // 只对同池套利应用出价容忍度（跨池竞争小，不需要加价）
+    // 计算限价：同池套利应用容忍度，跨池直接用原价
     let orderPrice: number;
     if (isSamePool) {
         const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
-        orderPrice = Math.min(askPrice * tolerance, 0.99);
+        orderPrice = Math.min(limitPrice * tolerance, 0.99);
     } else {
-        orderPrice = Math.min(askPrice, 0.99);  // 跨池直接用原价
+        orderPrice = Math.min(limitPrice, 0.99);
     }
     
-    // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
+    // 用 maxPriceLevel 计算 amount，尽可能多吃深度
     const amount = shares * orderPrice;
     
     // Polymarket 最小订单金额是 $1，如果不足则跳过
@@ -496,7 +495,7 @@ export const executeArbitrage = async (
     totalCost: number;
     expectedProfit: number;
 }> => {
-    // 检查冷却（同池增持完全跳过冷却，以最快速度平衡仓位）
+    // 检查冷却（同池增持不检查，因为如果没有真正的机会，扫描器就不应该发送）
     if (!opportunity.isSamePoolRebalance) {
         if (isDuplicateOpportunity(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice)) {
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };

@@ -126,13 +126,20 @@ class OrderBookManager {
             if (parsed.price_changes && Array.isArray(parsed.price_changes)) {
                 for (const change of parsed.price_changes) {
                     const current = this.orderBooks.get(change.asset_id);
-                    if (current && change.price && change.size) {
+                    if (current && change.price && change.size !== undefined) {
+                        const price = parseFloat(change.price);
+                        const size = parseFloat(change.size);
+                        
                         if (change.side === 'SELL') {
-                            current.bestAsk = parseFloat(change.price);
-                            current.bestAskSize = parseFloat(change.size);
+                            // 更新 asks 数组（维护多档深度）
+                            this.updateAsksArray(current, price, size);
+                            // 重新计算 bestAsk
+                            this.recalculateBestAsk(current);
                         } else if (change.side === 'BUY') {
-                            current.bestBid = parseFloat(change.price);
-                            current.bestBidSize = parseFloat(change.size);
+                            // 更新 bids 数组（维护多档深度）
+                            this.updateBidsArray(current, price, size);
+                            // 重新计算 bestBid
+                            this.recalculateBestBid(current);
                         }
                         current.timestamp = Date.now();
                     }
@@ -140,6 +147,78 @@ class OrderBookManager {
             }
         } catch (error) {
             // 静默处理解析错误
+        }
+    }
+    
+    /**
+     * 更新 asks 数组（增量更新）
+     */
+    private updateAsksArray(current: OrderBookData, price: number, size: number): void {
+        const existingIndex = current.asks.findIndex(a => Math.abs(a.price - price) < 0.0001);
+        
+        if (size <= 0) {
+            // size = 0 表示该层级被清空，删除
+            if (existingIndex >= 0) {
+                current.asks.splice(existingIndex, 1);
+            }
+        } else {
+            if (existingIndex >= 0) {
+                // 更新已有层级
+                current.asks[existingIndex].size = size;
+            } else {
+                // 新增层级，保持升序
+                current.asks.push({ price, size });
+                current.asks.sort((a, b) => a.price - b.price);
+            }
+        }
+    }
+    
+    /**
+     * 更新 bids 数组（增量更新）
+     */
+    private updateBidsArray(current: OrderBookData, price: number, size: number): void {
+        const existingIndex = current.bids.findIndex(b => Math.abs(b.price - price) < 0.0001);
+        
+        if (size <= 0) {
+            // size = 0 表示该层级被清空，删除
+            if (existingIndex >= 0) {
+                current.bids.splice(existingIndex, 1);
+            }
+        } else {
+            if (existingIndex >= 0) {
+                // 更新已有层级
+                current.bids[existingIndex].size = size;
+            } else {
+                // 新增层级，保持降序
+                current.bids.push({ price, size });
+                current.bids.sort((a, b) => b.price - a.price);
+            }
+        }
+    }
+    
+    /**
+     * 重新计算 bestAsk（从 asks 数组）
+     */
+    private recalculateBestAsk(current: OrderBookData): void {
+        if (current.asks.length > 0) {
+            current.bestAsk = current.asks[0].price;
+            current.bestAskSize = current.asks[0].size;
+        } else {
+            current.bestAsk = 1;  // 无卖单时设为 1
+            current.bestAskSize = 0;
+        }
+    }
+    
+    /**
+     * 重新计算 bestBid（从 bids 数组）
+     */
+    private recalculateBestBid(current: OrderBookData): void {
+        if (current.bids.length > 0) {
+            current.bestBid = current.bids[0].price;
+            current.bestBidSize = current.bids[0].size;
+        } else {
+            current.bestBid = 0;  // 无买单时设为 0
+            current.bestBidSize = 0;
         }
     }
     

@@ -1,13 +1,13 @@
 # Polymarket 套利机器人配置
-# 运行 npm run setup 自动生成，或手动复制此文件为 .env
+# 复制此文件为 .env 并填入配置
 
 # ========== 模式 ==========
 # 模拟模式（true=不实际下单，不需要私钥）
 SIMULATION_MODE=true
+# 启动时清除历史数据（true=从零开始）
 CLEAR_DATA_ON_START=false
 
 # ========== 钱包配置（模拟模式可选，实盘模式必填）==========
-# 模拟模式下可以留空或填写任意值
 PRIVATE_KEY=
 PROXY_WALLET=
 
@@ -16,42 +16,90 @@ ENABLE_15MIN=1
 ENABLE_1HR=1
 
 # ========== 交易参数 ==========
+# 单笔订单最大金额
 MAX_ORDER_SIZE_USD=14
+# 最小套利利润金额（低于此值跳过）
 MIN_PROFIT_USD=0.01
+# 使用订单簿深度的百分比
 DEPTH_USAGE_PERCENT=90
+# 出价容忍度（%）：实际出价比扫描价格高多少，提高成交率
+PRICE_TOLERANCE_PERCENT=0.5
+# 跨池套利单边最低价格：避免在极端走势时高风险套利
+MIN_CROSS_POOL_SINGLE_PRICE=0.25
 
-# 动态敞口限制（开盘波动大允许大敞口，后期逐渐收紧）
+# ========== 动态敞口限制 ==========
+# 开盘波动大允许大敞口，后期逐渐收紧
 # 公式：敞口从初始值线性收紧到最终值
-# 例如：初始30%，最终15%，13分钟收紧
-#   第0分钟: 30%（组合成本>$0.70可交易）
-#   第13分钟: 15%（组合成本>$0.85才可交易）
+# 初始值（开盘第一分钟，组合成本 > $0.70 可交易）
 MAX_ARBITRAGE_PERCENT_INITIAL=30
+# 最终值（事件后期，组合成本 > $0.85 才可交易）
 MAX_ARBITRAGE_PERCENT_FINAL=15
+# 收紧时长（分钟）
 MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=13
 
+# ========== 同池增持策略 ==========
+# 启用同池增持（在单个池内平衡 Up/Down）
+SAME_POOL_REBALANCE_ENABLED=true
+# 同池安全边际（%）：允许组合成本亏损的百分比，换取更高成交率
+# 公式：maxPrice = (1 - 对手方均价) × (1 + safetyMargin%)
+# 例如：Up均价 $0.45, safetyMargin=2% → maxPrice = 0.55 × 1.02 = $0.561
+SAME_POOL_SAFETY_MARGIN=2
+
+# ========== 紧急平衡（最后 N 秒强制平衡）==========
+# 启用紧急平衡
+EMERGENCY_BALANCE_ENABLED=true
+# 最后多少秒进入紧急平衡模式
+EMERGENCY_BALANCE_SECONDS=20
+# 平衡度低于此阈值时触发紧急平衡（%）
+EMERGENCY_BALANCE_THRESHOLD=60
+# 紧急平衡允许的最大亏损（%）
+EMERGENCY_BALANCE_MAX_LOSS=5
+
+# ========== 极端不平衡提前平仓 ==========
+# 当平衡度极低时（走势确定），提前平掉不平衡部分
+EXTREME_IMBALANCE_ENABLED=true
+# 最后多少秒检查极端不平衡
+EXTREME_IMBALANCE_SECONDS=90
+# 平衡度低于此值触发（%）
+EXTREME_IMBALANCE_THRESHOLD=30
+
 # ========== 止损配置 ==========
-# 止损功能开关（true/false）
+# 止损功能开关
 STOP_LOSS_ENABLED=true
-
-# 结束前多少秒开始监控止损（默认180秒=3分钟，即倒数第三分钟开始统计）
+# 结束前多少秒开始监控止损（默认180秒=3分钟）
 STOP_LOSS_WINDOW_SEC=180
-
-# 组合成本阈值（Up+Down Bid价格低于此值计入风险统计）
-# 当组合价格很低说明市场预期会反向（BTC跌ETH涨），是最坏情况
+# 组合成本阈值（Up+Down Bid 价格低于此值计入风险统计）
 STOP_LOSS_COST_THRESHOLD=0.6
-
-# 止损检查间隔（毫秒）- 默认1秒检查一次
+# 止损检查间隔（毫秒）
 STOP_LOSS_CHECK_INTERVAL_MS=1000
-
-# 风险比例阈值（低于阈值的次数占总检查次数的比例）
-# 超过此比例触发止损，默认0.7 = 70%
+# 风险比例阈值（超过此比例触发止损）
 STOP_LOSS_RISK_RATIO=0.7
-
-# 最小触发次数（风险次数的绝对值必须超过此值才触发止损）
-# 避免样本太小误判，默认30次
-# 以1秒检查一次计算，30次 = 至少30秒的数据
+# 最小触发次数（避免样本太小误判）
 STOP_LOSS_MIN_TRIGGER_COUNT=30
+# 止损模式：sell=平仓止损，hedge=对冲补仓保本
+STOP_LOSS_MODE=sell
+
+# ========== 币安波动率风控 ==========
+# 当 BTC 涨跌幅过小时触发对冲
+BINANCE_VOLATILITY_CHECK_ENABLED=false
+# 距离事件结束多少秒开始检查
+BINANCE_CHECK_WINDOW_SEC=60
+# 最小波动阈值（%），低于此值触发
+BINANCE_MIN_VOLATILITY_PERCENT=0.1
+
+# ========== 频率控制 ==========
+# 扫描间隔（毫秒）
+SCAN_INTERVAL_MS=5
+# 同一市场交易冷却时间（毫秒）
+TRADE_COOLDOWN_MS=1000
+# 最大并行交易数
+MAX_PARALLEL_TRADES=8
+
+# ========== Telegram 通知 ==========
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_GROUP_ID=
 
 # ========== 可选配置 ==========
 # RPC_URL=https://polygon-rpc.com
-
+# CLOB_HTTP_URL=https://clob.polymarket.com
