@@ -1051,24 +1051,24 @@ export const forceSettleByTimeGroup = async (timeGroup: TimeGroup): Promise<Sett
 /**
  * 从 Polymarket API 同步真实仓位
  * 每次订单成交后调用，确保仓位数据准确
+ * 
+ * ⚠️ 仅在实盘模式下有效，模拟模式下跳过
  */
 export const syncPositionsFromAPI = async (): Promise<void> => {
+    // 模拟模式下不同步（本地仓位是虚拟的，API 返回的是真实仓位）
+    if (CONFIG.SIMULATION_MODE) {
+        return;
+    }
+    
     try {
         const apiPositions = await getUserPositions(0);  // 获取所有仓位
         
         if (!apiPositions || apiPositions.length === 0) {
-            Logger.info(`🔄 API 同步: 无仓位数据`);
             return;
         }
         
-        // 🔍 调试：打印 API 返回的原始数据
-        Logger.info(`🔄 API 同步: 获取到 ${apiPositions.length} 个仓位`);
-        for (const p of apiPositions) {
-            Logger.info(`   📋 API: conditionId=${p.conditionId?.slice(0, 10)}... outcome="${p.outcome}" size=${p.size} avgPrice=${p.avgPrice}`);
-        }
-        
-        // 打印本地仓位的 conditionId
-        Logger.info(`   📋 本地仓位: ${Array.from(positions.keys()).map(k => k.slice(0, 10) + '...').join(', ') || '无'}`);
+        // 打印本地仓位的 conditionId（调试用）
+        const localIds = Array.from(positions.keys());
         
         // 按 conditionId 分组
         const positionsByCondition = new Map<string, UserPosition[]>();
@@ -1081,10 +1081,7 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         // 更新每个 conditionId 的仓位
         for (const [conditionId, apiPosGroup] of positionsByCondition.entries()) {
             const localPos = positions.get(conditionId);
-            if (!localPos) {
-                Logger.warning(`   ⚠️ conditionId ${conditionId.slice(0, 10)}... 不在本地仓位中，跳过`);
-                continue;
-            }
+            if (!localPos) continue;  // API 返回的仓位不在本地，跳过
             
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;
@@ -1104,12 +1101,10 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 } else if (isDown) {
                     apiDownShares = apiPos.size || 0;
                     apiDownAvgPrice = apiPos.avgPrice || 0;
-                } else {
-                    Logger.warning(`   ⚠️ 未知 outcome: "${apiPos.outcome}"`);
                 }
             }
             
-            // 检查是否有差异（任何差异都更新，不只是 > 0.1）
+            // 检查是否有差异
             const upDiff = Math.abs(localPos.upShares - apiUpShares);
             const downDiff = Math.abs(localPos.downShares - apiDownShares);
             
@@ -1119,15 +1114,13 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 // 更新为真实值（同时更新 shares 和 cost）
                 localPos.upShares = apiUpShares;
                 localPos.downShares = apiDownShares;
-                // ⚠️ 关键：用 API 返回的 avgPrice 重新计算 cost，保持平均价正确
+                // 用 API 返回的 avgPrice 重新计算 cost，保持平均价正确
                 localPos.upCost = apiUpShares * apiUpAvgPrice;
                 localPos.downCost = apiDownShares * apiDownAvgPrice;
                 localPos.lastUpdate = Date.now();
                 
                 // 保存到存储
                 saveToStorage(localPos);
-            } else {
-                Logger.info(`   ✅ ${localPos.slug.slice(0, 20)}... 仓位一致`);
             }
         }
     } catch (error: any) {
