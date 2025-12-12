@@ -13,7 +13,7 @@ import { scanArbitrageOpportunities, ArbitrageOpportunity, initWebSocket, getWeb
 import { getAssetAvgPrices } from './positions';
 import { initClient, getBalance, getUSDCBalance, ensureApprovals, executeArbitrage, isDuplicateOpportunity } from './executor';
 import { notifyBotStarted, notifySingleSettlement, notifyRunningStats } from './telegram';
-import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions } from './positions';
+import { getPositionStats, checkAndSettleExpired, onSettlement, getOverallStats, SettlementResult, loadPositionsFromStorage, getAllPositions, syncPositionsFromAPI } from './positions';
 import { initStorage, closeStorage, getStorageStatus, clearStorage } from './storage';
 import { checkAndRedeem } from './redeemer';
 import { checkStopLossSignals, executeStopLoss, getStopLossStatus, printEventSummary, shouldPauseTrading, checkBinanceVolatility, getTriggeredSignal, recordArbitrageOpportunity, checkExtremeImbalance, executeExtremeImbalanceSell, setEmergencyMode, isInEmergencyMode } from './stopLoss';
@@ -321,6 +321,9 @@ const mainLoop = async () => {
             Logger.success('🧹 已清除历史数据，从零开始');
         } else {
             loadPositionsFromStorage();  // 加载之前的仓位
+            // 启动时从 API 同步真实仓位
+            Logger.info('🔄 从 API 同步仓位...');
+            await syncPositionsFromAPI();
         }
     } catch (error) {
         Logger.error(`存储初始化失败: ${error}`);

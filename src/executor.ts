@@ -13,7 +13,7 @@ import { SignatureType } from '@polymarket/order-utils';
 import CONFIG from './config';
 import Logger from './logger';
 import { ArbitrageOpportunity } from './scanner';
-import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis, getAssetAvgPrices } from './positions';
+import { updatePosition, getImbalance, getPositionStats, getGroupCostAnalysis, getAssetAvgPrices, syncPositionsFromAPI } from './positions';
 import { recordHedgeCost, recordHedgeFill } from './hedging';
 
 let clobClient: ClobClient | null = null;
@@ -416,6 +416,7 @@ const executeBuy = async (
         const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
+            // 订单成功，返回预期值（实际成交量由 API 同步校正）
             Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
             return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
         }
@@ -689,6 +690,11 @@ export const executeArbitrage = async (
             downResult.cost,
             opportunity.endDate
         );
+    }
+    
+    // 从 API 同步真实仓位（确保数据准确）
+    if (upResult.success || downResult.success) {
+        await syncPositionsFromAPI();
     }
     
     const totalCost = upResult.cost + downResult.cost;

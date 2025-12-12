@@ -142,7 +142,7 @@ const getMarketPrice = async (client: ClobClient, tokenId: string): Promise<numb
 };
 
 /**
- * 卖出单个持仓
+ * 卖出单个持仓（循环吃单直到全部卖出）
  */
 const sellPosition = async (
     client: ClobClient,
@@ -150,49 +150,87 @@ const sellPosition = async (
     size: number,
     title: string
 ): Promise<boolean> => {
-    try {
-        // 获取当前买一价
-        const bidPrice = await getMarketPrice(client, tokenId);
-        
-        if (bidPrice <= 0) {
-            log.warning(`${title}: 无买单（市场可能已结算，请用 npm run redeem-all 赎回）`);
-            return false;
+    let remaining = size;
+    let totalSold = 0;
+    let totalReceived = 0;
+    const maxRetries = 10;
+    let retries = 0;
+    
+    log.info(`卖出: ${title}`);
+    log.info(`   目标: ${size.toFixed(2)} shares`);
+    
+    while (remaining > 0.1 && retries < maxRetries) {
+        try {
+            // 获取订单簿
+            const book = await client.getOrderBook(tokenId);
+            
+            if (!book.bids || book.bids.length === 0) {
+                log.warning(`   无买单，可能已结算，请用 npm run redeem-all 赎回`);
+                break;
+            }
+            
+            // 获取买一价和深度
+            const bestBid = book.bids[0];
+            const bidPrice = parseFloat(bestBid.price);
+            const bidSize = parseFloat(bestBid.size);
+            
+            if (bidPrice <= 0.01) {
+                log.warning(`   价格过低 ($${bidPrice.toFixed(3)})，可能已结算`);
+                break;
+            }
+            
+            // 本次卖出数量（不超过买一深度）
+            const sellSize = Math.min(remaining, bidSize);
+            const expectedValue = sellSize * bidPrice;
+            
+            // 检查最小订单金额
+            if (expectedValue < 1) {
+                log.warning(`   剩余 ${remaining.toFixed(2)} shares 价值 < $1，跳过`);
+                break;
+            }
+            
+            log.info(`   📤 卖出 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)} (预期 $${expectedValue.toFixed(2)})`);
+            
+            // ⚠️ 关键：amount 是 shares 数量，不是 USD 金额！
+            const orderArgs = {
+                side: Side.SELL,
+                tokenID: tokenId,
+                amount: sellSize,  // shares 数量
+                price: bidPrice,   // 用买一价，确保成交
+            };
+            
+            const signedOrder = await client.createMarketOrder(orderArgs);
+            const resp = await client.postOrder(signedOrder, OrderType.FOK);  // FOK 确保全部成交
+            
+            if (resp.success) {
+                totalSold += sellSize;
+                totalReceived += expectedValue;
+                remaining -= sellSize;
+                retries = 0;  // 成功后重置重试计数
+                log.success(`   ✅ 成交 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)}`);
+                
+                if (remaining > 0.1) {
+                    log.info(`   剩余 ${remaining.toFixed(2)} shares...`);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            } else {
+                retries++;
+                log.warning(`   ⚠️ 未成交 (${retries}/${maxRetries})，重试...`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        } catch (error: any) {
+            retries++;
+            const errMsg = error?.response?.data?.error || error?.message || '';
+            log.warning(`   ⚠️ 出错 (${retries}/${maxRetries}): ${errMsg}`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        
-        // 稍微低于买一价挂单，确保成交
-        const sellPrice = Math.max(0.01, bidPrice * 0.99);
-        const amountUSD = size * sellPrice;
-        
-        // 检查最小订单金额
-        if (amountUSD < 1) {
-            log.warning(`${title}: 金额 $${amountUSD.toFixed(2)} < $1 最小限制，跳过`);
-            return false;
-        }
-        
-        log.info(`卖出: ${title}`);
-        log.info(`   数量: ${size.toFixed(2)} shares @ $${bidPrice.toFixed(3)}`);
-        log.info(`   预期收入: $${amountUSD.toFixed(2)}`);
-        
-        const orderArgs = {
-            side: Side.SELL,
-            tokenID: tokenId,
-            amount: amountUSD,
-            price: sellPrice,
-        };
-        
-        const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FAK);  // 改用 FAK，部分成交也行
-        
-        if (resp.success) {
-            log.success(`✅ 卖出成功: ${title}`);
-            return true;
-        } else {
-            log.warning(`❌ 卖出失败: ${title} - ${resp.errorMsg || '无匹配单'}`);
-            return false;
-        }
-    } catch (error: any) {
-        const errMsg = error?.response?.data?.error || error?.message || error;
-        log.error(`卖出出错: ${title} - ${errMsg}`);
+    }
+    
+    if (totalSold > 0) {
+        log.success(`✅ ${title}: 共卖出 ${totalSold.toFixed(2)} shares，收入 $${totalReceived.toFixed(2)}`);
+        return true;
+    } else {
+        log.error(`❌ ${title}: 卖出失败`);
         return false;
     }
 };
