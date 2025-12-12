@@ -7,6 +7,7 @@ import { ethers } from 'ethers';
 import axios from 'axios';
 import CONFIG from './config';
 import Logger from './logger';
+import { deletePosition as deleteLocalPosition } from './positions';
 
 // 使用 getAddress 确保 checksum 正确
 const toChecksumAddress = (addr: string): string => {
@@ -123,6 +124,8 @@ export const getRedeemablePositions = async (): Promise<UserPosition[]> => {
 export const redeemPosition = async (conditionId: string, title?: string): Promise<boolean> => {
     if (CONFIG.SIMULATION_MODE) {
         Logger.info(`[模拟] 跳过赎回: ${conditionId.slice(0, 10)}...`);
+        // 模拟模式也要删除本地仓位
+        deleteLocalPosition(conditionId);
         return true;
     }
     
@@ -170,6 +173,8 @@ export const redeemPosition = async (conditionId: string, title?: string): Promi
         
         if (receipt.status === 1) {
             Logger.success(`✅ 赎回成功: ${title || conditionId.slice(0, 10)}... | Gas: ${receipt.gasUsed.toString()}`);
+            // 🔥 关键：删除本地仓位，避免残留
+            deleteLocalPosition(conditionId);
             return true;
         } else {
             Logger.error(`❌ 赎回失败: ${title || conditionId.slice(0, 10)}...`);
@@ -178,7 +183,8 @@ export const redeemPosition = async (conditionId: string, title?: string): Promi
     } catch (error: any) {
         // 如果是 "nothing to redeem" 类型的错误，不算失败
         if (error.message?.includes('nothing') || error.message?.includes('zero')) {
-            // 静默处理，无需赎回
+            // 静默处理，无需赎回，但也删除本地仓位
+            deleteLocalPosition(conditionId);
             return true;
         }
         Logger.error(`❌ 赎回出错: ${error.message || error}`);

@@ -117,6 +117,15 @@ export const updatePosition = (
     saveToStorage(pos);
 };
 
+/**
+ * 删除仓位（同时删除内存和持久化存储）
+ * 用于赎回后清除仓位
+ */
+export const deletePosition = (conditionId: string): void => {
+    positions.delete(conditionId);
+    deleteFromStorage(conditionId);
+};
+
 // 提前平仓收回的总金额（用于计入总收益）
 let totalEarlySellReceived = 0;
 
@@ -1159,6 +1168,7 @@ export default {
     loadPositionsFromStorage,
     getPosition,
     updatePosition,
+    deletePosition,
     recordSell,
     getEarlySellReceived,
     resetEarlySellReceived,
