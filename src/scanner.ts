@@ -543,20 +543,8 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const isRealArbitrage = crossPoolCost < 0.995;
         
         // 预测组合买入后的成本
-        // 计算满足 Polymarket $1 最小订单要求的最少 shares
-        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / cheapestUp.upBook.bestAsk);
-        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / cheapestDown.downBook.bestAsk);
-        const minSharesRequired = Math.max(minSharesForUp, minSharesForDown);
-        
-        // maxShares 必须同时满足深度限制和最小金额要求
-        const depthShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
-        const maxShares = Math.max(depthShares, minSharesRequired);
-        
-        // 如果深度不足以满足最小要求，跳过此机会
-        if (cheapestUp.upBook.bestAskSize < minSharesForUp || cheapestDown.downBook.bestAskSize < minSharesForDown) {
-            // 深度不够，无法下达 $1 以上的订单
-            continue;
-        }
+        // 注意：$1 最低限制在 executor.ts 中检查，scanner 只负责发现机会
+        const maxShares = Math.min(cheapestUp.upBook.bestAskSize, cheapestDown.downBook.bestAskSize);
         
         const groupPrediction = predictGroupCostAfterBuy(
             timeGroup,
@@ -1102,12 +1090,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             Logger.info(`   BTC同池[${modeTag}]: 平均Up $${btcUpAvgPrice.toFixed(3)} + 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
         }
         
-        if (totalAvailableSize >= 1 && btcUpAvgPrice > 0) {
+        // 检查金额是否 >= $1（不是股数）
+        const totalAmount1 = totalAvailableSize * avgAskPrice;
+        if (totalAmount1 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcUpAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = avgPrices.btc.imbalance;
             const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (maxShares >= 1) {
+            // 检查实际要买的金额是否 >= $1
+            const actualAmount1 = maxShares * avgAskPrice;
+            if (actualAmount1 >= CONFIG.MIN_ORDER_AMOUNT_USD) {
                 const defaultAnalysis = {
                     hasPosition: true,
                     currentAvgCost: 0,
@@ -1178,12 +1170,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
         const combinedCost = avgAskPrice + btcDownAvgPrice;
         
-        if (totalAvailableSize >= 1 && btcDownAvgPrice > 0) {
+        // 检查金额是否 >= $1（不是股数）
+        const totalAmount2 = totalAvailableSize * avgAskPrice;
+        if (totalAmount2 >= CONFIG.MIN_ORDER_AMOUNT_USD && btcDownAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = Math.abs(avgPrices.btc.imbalance);
             const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (maxShares >= 1) {
+            // 检查实际要买的金额是否 >= $1
+            const actualAmount2 = maxShares * avgAskPrice;
+            if (actualAmount2 >= CONFIG.MIN_ORDER_AMOUNT_USD) {
                 const defaultAnalysis = {
                     hasPosition: true,
                     currentAvgCost: 0,
@@ -1260,12 +1256,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
             Logger.info(`   ETH同池[${modeTag}]: 深度${levelsCount}档共${totalAvailableSize.toFixed(0)}@$${avgAskPrice.toFixed(3)} + 平均Down $${ethDownAvgPrice.toFixed(3)} = $${combinedCost.toFixed(3)} 限价$${maxPriceLevel.toFixed(3)}`);
         }
         
-        if (totalAvailableSize >= 1 && ethDownAvgPrice > 0) {
+        // 检查金额是否 >= $1（不是股数）
+        const totalAmount3 = totalAvailableSize * avgAskPrice;
+        if (totalAmount3 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethDownAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = Math.abs(avgPrices.eth.imbalance);
             const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (maxShares >= 1) {
+            // 检查实际要买的金额是否 >= $1
+            const actualAmount3 = maxShares * avgAskPrice;
+            if (actualAmount3 >= CONFIG.MIN_ORDER_AMOUNT_USD) {
                 const defaultAnalysis = {
                     hasPosition: true,
                     currentAvgCost: 0,
@@ -1336,12 +1336,16 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         const avgAskPrice = totalAvailableSize > 0 ? weightedAvgPrice / totalAvailableSize : 0;
         const combinedCost = ethUpAvgPrice + avgAskPrice;
         
-        if (totalAvailableSize >= 1 && ethUpAvgPrice > 0) {
+        // 检查金额是否 >= $1（不是股数）
+        const totalAmount4 = totalAvailableSize * avgAskPrice;
+        if (totalAmount4 >= CONFIG.MIN_ORDER_AMOUNT_USD && ethUpAvgPrice > 0) {
             const profitPercent = ((1 - combinedCost) / combinedCost) * 100;
             const neededShares = avgPrices.eth.imbalance;
             const maxShares = Math.min(neededShares, totalAvailableSize);
             
-            if (maxShares >= 1) {
+            // 检查实际要买的金额是否 >= $1
+            const actualAmount4 = maxShares * avgAskPrice;
+            if (actualAmount4 >= CONFIG.MIN_ORDER_AMOUNT_USD) {
                 const defaultAnalysis = {
                     hasPosition: true,
                     currentAvgCost: 0,

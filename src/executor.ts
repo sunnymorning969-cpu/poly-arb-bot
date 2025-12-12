@@ -493,27 +493,25 @@ export const executeArbitrage = async (
         const combinedCost = opportunity.upAskPrice + opportunity.downAskPrice;
         const totalCostNeeded = targetShares * combinedCost;
         
-        // Polymarket 最小订单金额 $1：计算两边各自满足 $1 所需的最少 shares
-        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice);
-        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice);
+        // Polymarket 最小订单金额 $1：计算两边各自满足 $1 所需的最少 shares（精确值，不取整）
+        const minSharesForUp = CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice;
+        const minSharesForDown = CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice;
         const minSharesRequired = Math.max(minSharesForUp, minSharesForDown);
         
-        // 检查是否超过最大订单限制，如果超过则按比例缩小 shares
-        if (totalCostNeeded > CONFIG.MAX_ORDER_SIZE_USD * 2) {
-            const maxAffordableShares = (CONFIG.MAX_ORDER_SIZE_USD * 2) / combinedCost;
-            targetShares = maxAffordableShares;
-        }
+        // 预算允许的最大股数
+        const maxAffordableShares = (CONFIG.MAX_ORDER_SIZE_USD * 2) / combinedCost;
         
-        // 确保 targetShares 满足两边都 >= $1 的要求
-        // 如果 targetShares 太小，说明 MAX_ORDER_SIZE_USD 设置得太低
-        if (targetShares < minSharesRequired) {
-            // 深度足够，但预算限制导致不满足最小金额，需要增加 shares
-            targetShares = minSharesRequired;
-            // 再次检查深度是否支持
-            if (minSharesRequired > maxUpShares || minSharesRequired > maxDownShares) {
-                Logger.warning(`⚠️ 深度不足满足$1最低: 需${minSharesRequired}股, Up=${maxUpShares.toFixed(1)} Down=${maxDownShares.toFixed(1)}`);
-                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
-            }
+        // targetShares 受三个限制：深度、预算、$1 最低要求
+        targetShares = Math.min(targetShares, maxAffordableShares);  // 不超过预算
+        
+        // 检查：在预算范围内，两边是否都能满足 $1 最低要求
+        const upAmount = targetShares * opportunity.upAskPrice;
+        const downAmount = targetShares * opportunity.downAskPrice;
+        
+        if (upAmount < CONFIG.MIN_ORDER_AMOUNT_USD || downAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
+            // 预算太小，无法让两边都满足 $1
+            // 静默跳过
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
         
         // 计算预期利润，如果太小就跳过
@@ -530,12 +528,10 @@ export const executeArbitrage = async (
         downShares = targetShares;
         
     } else if (action === 'buy_up_only') {
-        // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
+        // 对冲/同池增持：尽可能多买，吃掉全部深度
         // 普通交易：90% 深度，有金额限制
-        const minSharesForUp = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice);
-        
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-            // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
+            // 对冲/同池增持：使用全部深度，不受预算限制
             upShares = Math.min(opportunity.maxShares, opportunity.upAskSize);
         } else {
             const maxSharesByDepth = opportunity.upAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
@@ -543,32 +539,20 @@ export const executeArbitrage = async (
             upShares = Math.min(maxSharesByDepth, maxSharesByBudget);
         }
         
-        // 确保满足 Polymarket $1 最低要求
-        if (upShares < minSharesForUp) {
-            upShares = minSharesForUp;
-            // 检查深度是否支持
-            if (minSharesForUp > opportunity.upAskSize) {
-                Logger.warning(`⚠️ Up 深度不足满足$1最低: 需${minSharesForUp}股, 有${opportunity.upAskSize.toFixed(1)}`);
-                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
-            }
-        }
-        
-        if (upShares < 1) {
-            // 对冲/同池增持时打印更详细的深度信息
+        // 检查金额是否满足 $1 最低要求
+        const upAmount = upShares * opportunity.upAskPrice;
+        if (upAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
+            // 深度不够 $1，等待更多深度
             if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-                Logger.warning(`⚠️ 等待深度: Up 当前深度=${opportunity.upAskSize.toFixed(1)} @ $${opportunity.upAskPrice.toFixed(2)}`);
-            } else {
-                Logger.warning(`❌ Up 深度不足: ${opportunity.upAskSize.toFixed(0)}`);
+                Logger.warning(`⚠️ 等待深度: Up 当前$${upAmount.toFixed(2)} < $1 @ $${opportunity.upAskPrice.toFixed(2)}`);
             }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     } else if (action === 'buy_down_only') {
-        // 对冲/同池增持：使用 maxShares，吃掉全部深度，尽量多买
+        // 对冲/同池增持：尽可能多买，吃掉全部深度
         // 普通交易：90% 深度，有金额限制
-        const minSharesForDown = Math.ceil(CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice);
-        
         if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-            // 对冲/同池增持：使用全部深度，不受 DEPTH_USAGE_PERCENT 限制
+            // 对冲/同池增持：使用全部深度，不受预算限制
             downShares = Math.min(opportunity.maxShares, opportunity.downAskSize);
         } else {
             const maxSharesByDepth = opportunity.downAskSize * (CONFIG.DEPTH_USAGE_PERCENT / 100);
@@ -576,22 +560,12 @@ export const executeArbitrage = async (
             downShares = Math.min(maxSharesByDepth, maxSharesByBudget);
         }
         
-        // 确保满足 Polymarket $1 最低要求
-        if (downShares < minSharesForDown) {
-            downShares = minSharesForDown;
-            // 检查深度是否支持
-            if (minSharesForDown > opportunity.downAskSize) {
-                Logger.warning(`⚠️ Down 深度不足满足$1最低: 需${minSharesForDown}股, 有${opportunity.downAskSize.toFixed(1)}`);
-                return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
-            }
-        }
-        
-        if (downShares < 1) {
-            // 对冲/同池增持时打印更详细的深度信息
+        // 检查金额是否满足 $1 最低要求
+        const downAmount = downShares * opportunity.downAskPrice;
+        if (downAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
+            // 深度不够 $1，等待更多深度
             if (opportunity.isHedge || opportunity.isSamePoolRebalance) {
-                Logger.warning(`⚠️ 等待深度: Down 当前深度=${opportunity.downAskSize.toFixed(1)} @ $${opportunity.downAskPrice.toFixed(2)}`);
-            } else {
-                Logger.warning(`❌ Down 深度不足: ${opportunity.downAskSize.toFixed(0)}`);
+                Logger.warning(`⚠️ 等待深度: Down 当前$${downAmount.toFixed(2)} < $1 @ $${opportunity.downAskPrice.toFixed(2)}`);
             }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
