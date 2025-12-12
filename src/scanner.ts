@@ -1152,7 +1152,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     downMarketSlug: btcMarketData.market.slug,
                     downConditionId: btcMarketData.conditionId,
                     upAskPrice: 0,
-                    downAskPrice: avgAskPrice,
+                    downAskPrice: maxPriceLevel,  // 使用最高允许价格，确保能吃到所有符合条件的深度
                     upAskSize: 0,
                     downAskSize: totalAvailableSize,
                     combinedCost,
@@ -1231,7 +1231,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     upMarketSlug: btcMarketData.market.slug,
                     downMarketSlug: btcMarketData.market.slug,
                     downConditionId: btcMarketData.conditionId,
-                    upAskPrice: avgAskPrice,
+                    upAskPrice: maxPriceLevel,  // 使用最高允许价格
                     downAskPrice: 0,
                     upAskSize: totalAvailableSize,
                     downAskSize: 0,
@@ -1317,7 +1317,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     upMarketSlug: ethMarketData.market.slug,
                     downMarketSlug: ethMarketData.market.slug,
                     downConditionId: ethMarketData.conditionId,
-                    upAskPrice: avgAskPrice,
+                    upAskPrice: maxPriceLevel,  // 使用最高允许价格
                     downAskPrice: 0,
                     upAskSize: totalAvailableSize,
                     downAskSize: 0,
@@ -1398,7 +1398,7 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
                     downMarketSlug: ethMarketData.market.slug,
                     downConditionId: ethMarketData.conditionId,
                     upAskPrice: 0,
-                    downAskPrice: avgAskPrice,
+                    downAskPrice: maxPriceLevel,  // 使用最高允许价格
                     upAskSize: 0,
                     downAskSize: totalAvailableSize,
                     combinedCost,
