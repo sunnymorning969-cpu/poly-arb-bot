@@ -29,7 +29,7 @@ const FAIL_COOLDOWN_MS = 3000;  // 失败后冷却 3 秒
 
 // API 同步冷却（防止频繁校正覆盖正确数据）
 let lastSyncTime = 0;
-const SYNC_COOLDOWN_MS = 10000;  // 10 秒内只同步一次
+const SYNC_COOLDOWN_MS = 5000;  // 5 秒内只同步一次
 
 // 🔒 同池增持并发锁：同一时间段+资产+方向只能有一个订单在执行
 // Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
