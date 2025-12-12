@@ -27,6 +27,10 @@ const lastTradeTime = new Map<string, number>();
 const lastFailTime = new Map<string, number>();
 const FAIL_COOLDOWN_MS = 3000;  // 失败后冷却 3 秒
 
+// API 同步冷却（防止频繁校正覆盖正确数据）
+let lastSyncTime = 0;
+const SYNC_COOLDOWN_MS = 10000;  // 10 秒内只同步一次
+
 // 🔒 同池增持并发锁：同一时间段+资产+方向只能有一个订单在执行
 // Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
 const activeSamePoolExecutions = new Set<string>();
@@ -750,9 +754,15 @@ const executeArbitrageInternal = async (
         );
     }
     
-    // 从 API 同步真实仓位（确保数据准确）
+    // ⚠️ API 同步改为低频调用（防止频繁校正覆盖正确数据）
+    // 原因：API 有 1-3 秒延迟，太频繁会把正确的本地数据覆盖成过时的 API 数据
+    // 改为：10 秒内只同步一次，直接同步不延迟
     if (upResult.success || downResult.success) {
-        await syncPositionsFromAPI();
+        const now = Date.now();
+        if (now - lastSyncTime >= SYNC_COOLDOWN_MS) {
+            lastSyncTime = now;
+            await syncPositionsFromAPI();
+        }
     }
     
     const totalCost = upResult.cost + downResult.cost;
