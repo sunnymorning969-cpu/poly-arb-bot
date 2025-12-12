@@ -27,6 +27,26 @@ const lastTradeTime = new Map<string, number>();
 const lastFailTime = new Map<string, number>();
 const FAIL_COOLDOWN_MS = 3000;  // 失败后冷却 3 秒
 
+// 🔒 同池增持并发锁：同一时间段+资产+方向只能有一个订单在执行
+// Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
+const activeSamePoolExecutions = new Set<string>();
+
+const getSamePoolLockKey = (timeGroup: string, asset: string, side: string): string => {
+    return `${timeGroup}-${asset}-${side}`;
+};
+
+const tryAcquireSamePoolLock = (key: string): boolean => {
+    if (activeSamePoolExecutions.has(key)) {
+        return false;  // 已有同类型订单在执行
+    }
+    activeSamePoolExecutions.add(key);
+    return true;
+};
+
+const releaseSamePoolLock = (key: string): void => {
+    activeSamePoolExecutions.delete(key);
+};
+
 // 使用 getAddress 确保 checksum 正确
 const toChecksumAddress = (addr: string): string => {
     try {
@@ -385,16 +405,19 @@ const executeBuy = async (
     
     const client = await initClient();
     
-    // 计算限价：同池套利应用容忍度，跨池直接用原价
+    // 计算限价：同池增持应用 PRICE_TOLERANCE_PERCENT 进一步提高成交率
+    // 用户明确要求：允许价格 > $1 以换取更高成交率
     let orderPrice: number;
     if (isSamePool) {
+        // 同池增持：在 SAME_POOL_SAFETY_MARGIN 基础上再加 PRICE_TOLERANCE_PERCENT
         const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
         orderPrice = Math.min(limitPrice * tolerance, 0.99);
     } else {
+        // 跨池套利：直接用原价
         orderPrice = Math.min(limitPrice, 0.99);
     }
     
-    // 用 maxPriceLevel 计算 amount，尽可能多吃深度
+    // 用 orderPrice 计算 amount，尽可能多吃深度
     const amount = shares * orderPrice;
     
     // Polymarket 最小订单金额是 $1，如果不足则跳过
@@ -488,6 +511,42 @@ export const isOnCooldown = (_conditionId: string): boolean => false;
 export const executeArbitrage = async (
     opportunity: ArbitrageOpportunity,
     _amountUSD: number
+): Promise<{
+    success: boolean;
+    upFilled: number;
+    downFilled: number;
+    totalCost: number;
+    expectedProfit: number;
+}> => {
+    // 🔒 同池增持并发控制：同一资产同方向只能有一个订单在执行
+    let samePoolLockKey: string | null = null;
+    if (opportunity.isSamePoolRebalance && opportunity.rebalanceAsset && opportunity.rebalanceSide) {
+        samePoolLockKey = getSamePoolLockKey(
+            opportunity.timeGroup,
+            opportunity.rebalanceAsset,
+            opportunity.rebalanceSide
+        );
+        if (!tryAcquireSamePoolLock(samePoolLockKey)) {
+            // 已有同类型同池增持在执行，跳过避免重复下单
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
+    }
+    
+    // 包装整个执行逻辑，确保锁被释放
+    try {
+        return await executeArbitrageInternal(opportunity, samePoolLockKey);
+    } finally {
+        // 无论成功失败，释放锁
+        if (samePoolLockKey) {
+            releaseSamePoolLock(samePoolLockKey);
+        }
+    }
+};
+
+// 内部执行函数
+const executeArbitrageInternal = async (
+    opportunity: ArbitrageOpportunity,
+    _samePoolLockKey: string | null
 ): Promise<{
     success: boolean;
     upFilled: number;
