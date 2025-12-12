@@ -95,32 +95,21 @@ export const getUserPositions = async (sizeThreshold: number = 0.1): Promise<Use
 
 /**
  * 查询可赎回的持仓
- * 过滤条件：
- * 1. redeemable === true（API 标记）
- * 2. curPrice >= 0.99 或 <= 0.01（已结算）
- * 3. size > 0.0001（有余额）
+ * 直接让 API 返回 redeemable=true 的持仓（和手动脚本一致）
  */
 export const getRedeemablePositions = async (): Promise<UserPosition[]> => {
     try {
-        // 先获取所有持仓
+        // 直接请求可赎回的持仓（API 参数 redeemable: true）
         const response = await axios.get(`${DATA_API}/positions`, {
             params: {
                 user: CONFIG.PROXY_WALLET,
-                sizeThreshold: ZERO_THRESHOLD,
+                redeemable: true,  // ← 关键：让 API 直接过滤
+                sizeThreshold: 0.1,
             },
             timeout: 10000,
         });
         
-        const allPositions: UserPosition[] = response.data || [];
-        
-        // 过滤：已结算 + 可赎回
-        const redeemable = allPositions.filter(pos => 
-            pos.redeemable === true &&
-            (pos.currentPrice >= RESOLVED_HIGH || pos.currentPrice <= RESOLVED_LOW) &&
-            pos.size > ZERO_THRESHOLD
-        );
-        
-        return redeemable;
+        return response.data || [];
     } catch (error) {
         Logger.error(`查询可赎回持仓失败: ${error}`);
         return [];
@@ -238,8 +227,8 @@ let lastRedeemCheck = 0;
 export const checkAndRedeem = async (): Promise<void> => {
     const now = Date.now();
     
-    // 每 5 秒检查一次
-    if (now - lastRedeemCheck < 5000) {
+    // 每 10 秒检查一次（避免 API 限频）
+    if (now - lastRedeemCheck < 10000) {
         return;
     }
     lastRedeemCheck = now;
@@ -248,6 +237,10 @@ export const checkAndRedeem = async (): Promise<void> => {
         const positions = await getRedeemablePositions();
         
         if (positions.length === 0) {
+            // 每 60 秒输出一次"无可赎回"日志，避免刷屏
+            if (now % 60000 < 10000) {
+                // 静默，不输出
+            }
             return;
         }
         
