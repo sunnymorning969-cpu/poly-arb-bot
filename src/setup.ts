@@ -80,6 +80,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '',
         '# ========== 交易参数 ==========',
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
+        `PRICE_TOLERANCE_PERCENT=${config.PRICE_TOLERANCE_PERCENT || '0.5'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
         `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '6'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
@@ -245,6 +246,14 @@ const main = async () => {
         config.MAX_ORDER_SIZE_USD = maxOrder;
     } else if (!config.MAX_ORDER_SIZE_USD) {
         config.MAX_ORDER_SIZE_USD = '14';
+    }
+    
+    const currentPriceTolerance = config.PRICE_TOLERANCE_PERCENT || '0.5';
+    const priceTolerance = await question(`出价容忍度 % (提高成交率, 当前: ${currentPriceTolerance}): `);
+    if (priceTolerance && !isNaN(parseFloat(priceTolerance))) {
+        config.PRICE_TOLERANCE_PERCENT = priceTolerance;
+    } else if (!config.PRICE_TOLERANCE_PERCENT) {
+        config.PRICE_TOLERANCE_PERCENT = '0.5';
     }
     
     const currentMinProfit = config.MIN_PROFIT_USD || '0.01';
@@ -656,6 +665,7 @@ const main = async () => {
     console.log('');
     console.log(`  💰 交易参数:`);
     console.log(`     单笔最大: $${config.MAX_ORDER_SIZE_USD}`);
+    console.log(`     出价容忍度: ${config.PRICE_TOLERANCE_PERCENT}%`);
     console.log(`     最小利润额: $${config.MIN_PROFIT_USD}`);
     console.log(`     最小利润率: ${config.MIN_ARBITRAGE_PERCENT}%`);
     const initial = config.MAX_ARBITRAGE_PERCENT_INITIAL || '30';

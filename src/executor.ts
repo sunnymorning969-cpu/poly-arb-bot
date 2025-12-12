@@ -23,6 +23,10 @@ let wallet: ethers.Wallet | null = null;
 // 记录上次下单时间（同一市场必须冷却）
 const lastTradeTime = new Map<string, number>();
 
+// 记录失败时间（失败后短暂冷却，避免反复重试）
+const lastFailTime = new Map<string, number>();
+const FAIL_COOLDOWN_MS = 3000;  // 失败后冷却 3 秒
+
 // 使用 getAddress 确保 checksum 正确
 const toChecksumAddress = (addr: string): string => {
     try {
@@ -377,41 +381,55 @@ const executeBuy = async (
         return { success: true, filled: shares, avgPrice: askPrice, cost: estimatedCost };
     }
     
-    try {
-        const client = await initClient();
-        
-        // 用稍高一点的价格确保成交（FOK 要求价格匹配）
-        const orderPrice = Math.min(askPrice * 1.005, 0.99);
-        
-        // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
-        const amount = shares * orderPrice;
-        
-        // Polymarket 最小订单金额是 $1，如果不足则跳过（由 scanner 层面保证）
-        const MIN_ORDER_AMOUNT = 1.0;
-        if (amount < MIN_ORDER_AMOUNT) {
-            Logger.warning(`⏭️ ${outcome}: 订单金额 $${amount.toFixed(2)} < $1 最小限制，跳过`);
-            return { success: false, filled: 0, avgPrice: 0, cost: 0 };
-        }
-        
-        const orderArgs = { 
-            side: Side.BUY, 
-            tokenID: tokenId, 
-            amount: amount,      // USD 金额 = shares × price
-            price: orderPrice 
-        };
-        const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FAK);
-        
-        if (resp.success) {
-            Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
-            return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
-        }
-        Logger.warning(`❌ ${outcome}: 订单未成交`);
-        return { success: false, filled: 0, avgPrice: 0, cost: 0 };
-    } catch (error) {
-        Logger.error(`❌ ${outcome}: 下单失败 - ${error}`);
+    const client = await initClient();
+    
+    // 应用出价容忍度，提高成交率
+    const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
+    const orderPrice = Math.min(askPrice * tolerance, 0.99);
+    
+    // 用 shares * price 精确计算 amount，确保买到指定数量的 shares
+    const amount = shares * orderPrice;
+    
+    // Polymarket 最小订单金额是 $1，如果不足则跳过
+    if (amount < CONFIG.MIN_ORDER_AMOUNT_USD) {
         return { success: false, filled: 0, avgPrice: 0, cost: 0 };
     }
+    
+    const orderArgs = { 
+        side: Side.BUY, 
+        tokenID: tokenId, 
+        amount: amount,
+        price: orderPrice 
+    };
+    
+    // 重试逻辑：最多 3 次，每次间隔 0.5 秒
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 500;
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const signedOrder = await client.createMarketOrder(orderArgs);
+            const resp = await client.postOrder(signedOrder, OrderType.FAK);
+            
+            if (resp.success) {
+                Logger.success(`✅ ${outcome}: ${shares.toFixed(2)} shares @ $${orderPrice.toFixed(3)}`);
+                return { success: true, filled: shares, avgPrice: orderPrice, cost: amount };
+            }
+            
+            // 失败但不打印日志，直接重试
+            if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            }
+        } catch (error) {
+            // 出错也重试
+            if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            }
+        }
+    }
+    
+    // 3 次都失败，静默返回
+    return { success: false, filled: 0, avgPrice: 0, cost: 0 };
 };
 
 /**

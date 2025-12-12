@@ -47,6 +47,10 @@ export const CONFIG = {
     // Polymarket 最小订单金额（平台硬性要求，不可修改）
     MIN_ORDER_AMOUNT_USD: 1.0,
     
+    // 出价容忍度（%）：实际出价比扫描价格高多少，提高成交率
+    // 例如：扫描到 $0.60，容忍度 1%，实际出价 $0.606
+    PRICE_TOLERANCE_PERCENT: parseFloat(process.env.PRICE_TOLERANCE_PERCENT || '0.5'),
+    
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     
