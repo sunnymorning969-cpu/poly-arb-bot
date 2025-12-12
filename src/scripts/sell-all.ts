@@ -46,22 +46,57 @@ if (!CONFIG.PRIVATE_KEY || !CONFIG.PROXY_WALLET) {
 }
 
 /**
- * 初始化 CLOB Client
+ * 初始化 CLOB Client（和主程序保持一致）
  */
 const initClient = async (): Promise<ClobClient> => {
     const provider = new ethers.providers.JsonRpcProvider(CONFIG.RPC_URL);
     const wallet = new ethers.Wallet(CONFIG.PRIVATE_KEY, provider);
     
-    const client = new ClobClient(
+    // 用于签名订单的 wallet（如果有 proxy，使用单独的 signer）
+    const clobWallet = CONFIG.PROXY_WALLET 
+        ? new ethers.Wallet(CONFIG.PRIVATE_KEY, provider)
+        : wallet;
+    
+    // 先创建临时 client 获取 API Key
+    const tempClient = new ClobClient(
         CONFIG.CLOB_HTTP_URL,
         CONFIG.CHAIN_ID,
         wallet,
         undefined,
-        SignatureType.POLY_GNOSIS_SAFE,
-        CONFIG.PROXY_WALLET
+        CONFIG.PROXY_WALLET ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA,
+        CONFIG.PROXY_WALLET || undefined
     );
     
-    await client.createOrDeriveApiKey();
+    // 获取 API Key（静默处理错误）
+    let creds: any;
+    try {
+        creds = await tempClient.createApiKey();
+    } catch {
+        // createApiKey 失败，尝试 deriveApiKey
+    }
+    
+    if (!creds?.key) {
+        try {
+            creds = await tempClient.deriveApiKey();
+        } catch {
+            // deriveApiKey 也失败
+        }
+    }
+    
+    if (!creds?.key) {
+        throw new Error('无法获取 API Key，请检查钱包配置');
+    }
+    
+    // 使用 API Key 创建正式 client
+    const client = new ClobClient(
+        CONFIG.CLOB_HTTP_URL,
+        CONFIG.CHAIN_ID,
+        clobWallet,
+        creds,
+        CONFIG.PROXY_WALLET ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA,
+        CONFIG.PROXY_WALLET || undefined
+    );
+    
     return client;
 };
 
@@ -108,16 +143,22 @@ const sellPosition = async (
         const bidPrice = await getMarketPrice(client, tokenId);
         
         if (bidPrice <= 0) {
-            log.warning(`${title}: 无买单，跳过`);
+            log.warning(`${title}: 无买单（市场可能已结算，请用 npm run redeem-all 赎回）`);
             return false;
         }
         
         // 稍微低于买一价挂单，确保成交
-        const sellPrice = Math.max(0.01, bidPrice * 0.995);
+        const sellPrice = Math.max(0.01, bidPrice * 0.99);
         const amountUSD = size * sellPrice;
         
+        // 检查最小订单金额
+        if (amountUSD < 1) {
+            log.warning(`${title}: 金额 $${amountUSD.toFixed(2)} < $1 最小限制，跳过`);
+            return false;
+        }
+        
         log.info(`卖出: ${title}`);
-        log.info(`   数量: ${size.toFixed(2)} shares @ $${sellPrice.toFixed(3)}`);
+        log.info(`   数量: ${size.toFixed(2)} shares @ $${bidPrice.toFixed(3)}`);
         log.info(`   预期收入: $${amountUSD.toFixed(2)}`);
         
         const orderArgs = {
@@ -128,17 +169,18 @@ const sellPosition = async (
         };
         
         const signedOrder = await client.createMarketOrder(orderArgs);
-        const resp = await client.postOrder(signedOrder, OrderType.FOK);
+        const resp = await client.postOrder(signedOrder, OrderType.FAK);  // 改用 FAK，部分成交也行
         
         if (resp.success) {
             log.success(`✅ 卖出成功: ${title}`);
             return true;
         } else {
-            log.warning(`❌ 卖出失败: ${title} - ${resp.errorMsg || '未知错误'}`);
+            log.warning(`❌ 卖出失败: ${title} - ${resp.errorMsg || '无匹配单'}`);
             return false;
         }
     } catch (error: any) {
-        log.error(`卖出出错: ${title} - ${error.message || error}`);
+        const errMsg = error?.response?.data?.error || error?.message || error;
+        log.error(`卖出出错: ${title} - ${errMsg}`);
         return false;
     }
 };
