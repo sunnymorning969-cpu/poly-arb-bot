@@ -409,16 +409,17 @@ const executeBuy = async (
     
     const client = await initClient();
     
-    // 计算限价：同池增持应用 PRICE_TOLERANCE_PERCENT 进一步提高成交率
-    // 用户明确要求：允许价格 > $1 以换取更高成交率
+    // 计算限价：加容差提高成交率
+    // FAK 订单的 price 是最高可接受价格，如果不加容差，市场轻微波动就会导致不成交
     let orderPrice: number;
     if (isSamePool) {
         // 同池增持：在 SAME_POOL_SAFETY_MARGIN 基础上再加 PRICE_TOLERANCE_PERCENT
         const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
         orderPrice = Math.min(limitPrice * tolerance, 0.99);
     } else {
-        // 跨池套利：直接用原价
-        orderPrice = Math.min(limitPrice, 0.99);
+        // 跨池套利：加 1% 容差应对市场微小波动
+        const crossPoolTolerance = 1.01;
+        orderPrice = Math.min(limitPrice * crossPoolTolerance, 0.99);
     }
     
     // 用 orderPrice 计算 amount，尽可能多吃深度
@@ -448,6 +449,12 @@ const executeBuy = async (
             const actualShares = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares;
             const actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
             const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
+            
+            // 🔧 如果实际成交数量为 0，当作失败处理
+            if (actualShares < 0.01) {
+                Logger.warning(`❌ ${outcome}: 成交0 shares`);
+                return { success: false, filled: 0, avgPrice: 0, cost: 0 };
+            }
             
             Logger.success(`✅ ${outcome}: ${actualShares.toFixed(2)} shares @ $${actualAvgPrice.toFixed(3)}`);
             return { success: true, filled: actualShares, avgPrice: actualAvgPrice, cost: actualCost };
@@ -481,8 +488,11 @@ const executeBuy = async (
                     const actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
                     const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
                     
-                    Logger.success(`✅ ${outcome}: ${actualShares.toFixed(2)} shares @ $${actualAvgPrice.toFixed(3)}`);
-                    return { success: true, filled: actualShares, avgPrice: actualAvgPrice, cost: actualCost };
+                    // 如果实际成交数量为 0，当作失败
+                    if (actualShares >= 0.01) {
+                        Logger.success(`✅ ${outcome}: ${actualShares.toFixed(2)} shares @ $${actualAvgPrice.toFixed(3)}`);
+                        return { success: true, filled: actualShares, avgPrice: actualAvgPrice, cost: actualCost };
+                    }
                 }
             } catch (retryErr) {
                 // 重试也失败
@@ -919,6 +929,13 @@ export const executeSell = async (
             // SELL 订单：takingAmount 是收到的 USDC，makingAmount 是卖出的 shares
             const actualReceived = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares * sellPrice;
             const actualSold = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : shares;
+            
+            // 如果实际成交数量为 0，当作失败
+            if (actualSold < 0.01) {
+                Logger.warning(`❌ [卖出] ${label}: 成交0 shares`);
+                return { success: false, received: 0 };
+            }
+            
             Logger.success(`✅ [卖出] ${label}: ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
             return { success: true, received: actualReceived };
         }
@@ -937,8 +954,11 @@ export const executeSell = async (
                     // 🔧 修复：使用 API 返回的实际成交数量
                     const actualReceived = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares * sellPrice;
                     const actualSold = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : shares;
-                    Logger.success(`✅ [卖出] ${label}: ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
-                    return { success: true, received: actualReceived };
+                    
+                    if (actualSold >= 0.01) {
+                        Logger.success(`✅ [卖出] ${label}: ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
+                        return { success: true, received: actualReceived };
+                    }
                 }
             } catch (retryErr) {
                 // 重试也失败

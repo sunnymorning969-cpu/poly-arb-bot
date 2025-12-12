@@ -1080,6 +1080,13 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             return;
         }
         
+        // 🔍 调试：打印第一个仓位的所有字段
+        if (apiPositions.length > 0) {
+            const sample = apiPositions[0] as any;
+            Logger.info(`🔍 API仓位字段: ${Object.keys(sample).join(', ')}`);
+            Logger.info(`🔍 示例: market="${sample.market}" slug="${sample.slug}" title="${sample.title?.slice(0,30)}"`);
+        }
+        
         // 按 conditionId 分组 API 仓位
         const positionsByConditionId = new Map<string, UserPosition[]>();
         for (const pos of apiPositions) {
@@ -1102,22 +1109,25 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         let created = 0;
         
         for (const [conditionId, apiPosGroup] of positionsByConditionId.entries()) {
-            const firstPos = apiPosGroup[0];
-            const slug = firstPos?.market || '';
-            const title = firstPos?.title || '';
+            const firstPos = apiPosGroup[0] as any;
+            // 兼容多种字段名
+            const slug = firstPos?.market || firstPos?.slug || firstPos?.proxyTicker || '';
+            const title = firstPos?.title || firstPos?.eventTitle || firstPos?.question || '';
             
-            // 放宽过滤：只要包含 btc/eth 和 up/down 相关关键词就处理
-            const slugLower = slug.toLowerCase();
+            // 🔧 修复：主要依赖 title 字段过滤（API 的 market 字段可能为空）
             const titleLower = title.toLowerCase();
-            const isRelevant = (slugLower.includes('btc') || slugLower.includes('bitcoin') || 
-                               slugLower.includes('eth') || slugLower.includes('ethereum')) &&
-                              (slugLower.includes('up') || slugLower.includes('down') || 
-                               titleLower.includes('up') || titleLower.includes('down'));
+            const slugLower = slug.toLowerCase();
+            const combined = titleLower + ' ' + slugLower;
+            
+            const hasBtcOrEth = combined.includes('btc') || combined.includes('bitcoin') || 
+                                combined.includes('eth') || combined.includes('ethereum');
+            const hasUpDown = combined.includes('up') || combined.includes('down');
+            const isRelevant = hasBtcOrEth && hasUpDown;
             
             if (!isRelevant) {
-                // 打印跳过的仓位，方便调试
-                if (apiPosGroup.some(p => (p.size || 0) > 1)) {
-                    Logger.info(`   ⏭️ 跳过非相关市场: ${slug.slice(0, 40)} size=${apiPosGroup.map(p => p.size?.toFixed(1)).join('/')}`);
+                // 只打印有意义的跳过
+                if (apiPosGroup.some(p => (p.size || 0) > 5)) {
+                    Logger.info(`   ⏭️ 跳过: "${title.slice(0, 35)}" size=${apiPosGroup.map(p => p.size?.toFixed(1)).join('/')}`);
                 }
                 continue;
             }
@@ -1150,9 +1160,11 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             
             if (!localPos) {
                 // 本地不存在，创建新仓位
+                // 如果 slug 为空，用 title 生成一个简化的 slug
+                const effectiveSlug = slug || title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
                 localPos = {
                     conditionId,
-                    slug,
+                    slug: effectiveSlug,
                     title,
                     upShares: apiUpShares,
                     downShares: apiDownShares,
@@ -1164,7 +1176,9 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 positions.set(conditionId, localPos);
                 saveToStorage(localPos);
                 created++;
-                Logger.success(`🔄 创建仓位 ${slug.slice(0, 30)}: Up=${apiUpShares.toFixed(1)}@$${apiUpAvgPrice.toFixed(3)} Down=${apiDownShares.toFixed(1)}@$${apiDownAvgPrice.toFixed(3)}`);
+                // 显示 title 更直观
+                const displayName = title.slice(0, 35) || effectiveSlug.slice(0, 30);
+                Logger.success(`🔄 创建仓位 ${displayName}: Up=${apiUpShares.toFixed(1)}@$${apiUpAvgPrice.toFixed(3)} Down=${apiDownShares.toFixed(1)}@$${apiDownAvgPrice.toFixed(3)}`);
             } else {
                 // 本地存在，检查是否需要校正
                 const upDiff = Math.abs(localPos.upShares - apiUpShares);
