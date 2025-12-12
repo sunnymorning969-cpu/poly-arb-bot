@@ -1060,28 +1060,35 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         return;
     }
     
+    Logger.info(`🔄 开始同步仓位...`);
+    
     try {
         const apiPositions = await getUserPositions(0);  // 获取所有仓位
+        
+        Logger.info(`🔄 API返回 ${apiPositions?.length || 0} 个仓位`);
         
         if (!apiPositions || apiPositions.length === 0) {
             return;
         }
         
-        // 打印本地仓位的 conditionId（调试用）
-        const localIds = Array.from(positions.keys());
-        
-        // 按 conditionId 分组
-        const positionsByCondition = new Map<string, UserPosition[]>();
+        // 按 market slug 分组 API 仓位（更可靠的匹配方式）
+        const positionsBySlug = new Map<string, UserPosition[]>();
         for (const pos of apiPositions) {
-            const existing = positionsByCondition.get(pos.conditionId) || [];
+            const slug = pos.market || '';
+            if (!slug) continue;
+            const existing = positionsBySlug.get(slug) || [];
             existing.push(pos);
-            positionsByCondition.set(pos.conditionId, existing);
+            positionsBySlug.set(slug, existing);
         }
         
-        // 更新每个 conditionId 的仓位
-        for (const [conditionId, apiPosGroup] of positionsByCondition.entries()) {
-            const localPos = positions.get(conditionId);
-            if (!localPos) continue;  // API 返回的仓位不在本地，跳过
+        // 遍历本地仓位，用 slug 匹配 API 仓位
+        let synced = 0;
+        for (const localPos of positions.values()) {
+            const apiPosGroup = positionsBySlug.get(localPos.slug);
+            if (!apiPosGroup) {
+                Logger.warning(`🔄 同步: ${localPos.slug.slice(0, 25)} 在API中找不到`);
+                continue;
+            }
             
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;
@@ -1089,7 +1096,10 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             let apiUpAvgPrice = 0;
             let apiDownAvgPrice = 0;
             
+            // 调试：打印 API 返回的每个仓位
             for (const apiPos of apiPosGroup) {
+                Logger.info(`   📋 API[${localPos.slug.slice(0, 20)}]: outcome="${apiPos.outcome}" size=${apiPos.size?.toFixed(1)}`);
+                
                 // 兼容多种 outcome 格式：Yes/No, Up/Down, YES/NO
                 const outcomeUpper = (apiPos.outcome || '').toUpperCase();
                 const isUp = outcomeUpper === 'YES' || outcomeUpper === 'UP';
@@ -1101,6 +1111,8 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 } else if (isDown) {
                     apiDownShares = apiPos.size || 0;
                     apiDownAvgPrice = apiPos.avgPrice || 0;
+                } else {
+                    Logger.warning(`   ⚠️ 未知outcome: "${apiPos.outcome}"`);
                 }
             }
             
@@ -1108,8 +1120,8 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             const upDiff = Math.abs(localPos.upShares - apiUpShares);
             const downDiff = Math.abs(localPos.downShares - apiDownShares);
             
-            if (upDiff > 0.01 || downDiff > 0.01) {
-                Logger.warning(`🔄 仓位校正 ${localPos.slug}: Up ${localPos.upShares.toFixed(2)}→${apiUpShares.toFixed(2)} Down ${localPos.downShares.toFixed(2)}→${apiDownShares.toFixed(2)}`);
+            if (upDiff > 0.5 || downDiff > 0.5) {
+                Logger.warning(`🔄 仓位校正 ${localPos.slug.slice(0, 25)}: Up ${localPos.upShares.toFixed(1)}→${apiUpShares.toFixed(1)} Down ${localPos.downShares.toFixed(1)}→${apiDownShares.toFixed(1)}`);
                 
                 // 更新为真实值（同时更新 shares 和 cost）
                 localPos.upShares = apiUpShares;
@@ -1121,7 +1133,12 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 
                 // 保存到存储
                 saveToStorage(localPos);
+                synced++;
             }
+        }
+        
+        if (synced > 0) {
+            Logger.info(`🔄 API同步: 校正了 ${synced} 个仓位`);
         }
     } catch (error: any) {
         Logger.error(`❌ API 同步失败: ${error.message || error}`);
