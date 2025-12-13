@@ -14,6 +14,7 @@ import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup, getAssetAvgPrices } from './positions';
 import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, clearExtremeImbalance, setEmergencyMode, isInEmergencyMode, clearEmergencyMode } from './stopLoss';
 import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog, canExecuteHedge, getRemainingHedge } from './hedging';
+import { isSamePoolLocked } from './executor';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -1082,7 +1083,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const safetyMargin = CONFIG.SAME_POOL_SAFETY_MARGIN / 100;
     
     // BTC 池：Up > Down，买入 Down
-    if (avgPrices.btc && avgPrices.btc.imbalance > 0) {
+    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会（防止并发导致过度购买）
+    if (avgPrices.btc && avgPrices.btc.imbalance > 0 && !isSamePoolLocked(timeGroup, 'btc', 'down')) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.downBook.asks || [];
@@ -1175,7 +1177,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // BTC 池：Down > Up，买入 Up
-    if (avgPrices.btc && avgPrices.btc.imbalance < 0) {
+    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
+    if (avgPrices.btc && avgPrices.btc.imbalance < 0 && !isSamePoolLocked(timeGroup, 'btc', 'up')) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.upBook.asks || [];
@@ -1258,7 +1261,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // ETH 池：Down > Up，买入 Up
-    if (avgPrices.eth && avgPrices.eth.imbalance < 0) {
+    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
+    if (avgPrices.eth && avgPrices.eth.imbalance < 0 && !isSamePoolLocked(timeGroup, 'eth', 'up')) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.upBook.asks || [];
@@ -1347,7 +1351,8 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // ETH 池：Up > Down，买入 Down
-    if (avgPrices.eth && avgPrices.eth.imbalance > 0) {
+    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
+    if (avgPrices.eth && avgPrices.eth.imbalance > 0 && !isSamePoolLocked(timeGroup, 'eth', 'down')) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.downBook.asks || [];

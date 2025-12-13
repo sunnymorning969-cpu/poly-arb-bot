@@ -35,8 +35,14 @@ const SYNC_COOLDOWN_MS = 5000;   // 5 秒同步一次
 // Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
 const activeSamePoolExecutions = new Set<string>();
 
-const getSamePoolLockKey = (timeGroup: string, asset: string, side: string): string => {
+export const getSamePoolLockKey = (timeGroup: string, asset: string, side: string): string => {
     return `${timeGroup}-${asset}-${side}`;
+};
+
+// 🔧 导出供 scanner 使用：检查锁是否被占用
+export const isSamePoolLocked = (timeGroup: string, asset: string, side: string): boolean => {
+    const key = getSamePoolLockKey(timeGroup, asset, side);
+    return activeSamePoolExecutions.has(key);
 };
 
 const tryAcquireSamePoolLock = (key: string): boolean => {
