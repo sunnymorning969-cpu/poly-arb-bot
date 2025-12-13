@@ -1131,11 +1131,20 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             return;
         }
         
-        // 🔍 调试：打印第一个仓位的所有字段
+        // 🔍 调试：打印仓位关键字段
         if (apiPositions.length > 0) {
             const sample = apiPositions[0] as any;
             Logger.info(`🔍 API仓位字段: ${Object.keys(sample).join(', ')}`);
-            Logger.info(`🔍 示例: market="${sample.market}" slug="${sample.slug}" title="${sample.title?.slice(0,30)}"`);
+            // 找一个有 size 的 updown 仓位作为示例
+            const updownSample = apiPositions.find((p: any) => 
+                (p.slug?.includes('updown') || p.title?.toLowerCase().includes('up or down')) && 
+                p.size > 0
+            ) as any;
+            if (updownSample) {
+                Logger.info(`🔍 UpDown示例: slug="${updownSample.slug?.slice(0,30)}" outcome="${updownSample.outcome}" size=${updownSample.size} avgPrice=${updownSample.avgPrice}`);
+            } else {
+                Logger.info(`🔍 示例: slug="${sample.slug}" outcome="${sample.outcome}" size=${sample.size}`);
+            }
         }
         
         // 按 conditionId 分组 API 仓位
