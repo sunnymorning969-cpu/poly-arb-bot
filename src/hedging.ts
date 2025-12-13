@@ -210,9 +210,14 @@ export const recordHedgeCost = (_timeGroup: TimeGroup, _cost: number): void => {
 };
 
 /**
- * 记录对冲成交
+ * 记录对冲成交（4个参数版本）
  */
-export const recordHedgeFill = (_timeGroup: TimeGroup, _shares: number): void => {
+export const recordHedgeFill = (
+    _timeGroup: TimeGroup, 
+    _hedgeSide: string, 
+    _filledShares: number, 
+    _totalCost: number
+): void => {
     // 占位
 };
 
