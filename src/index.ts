@@ -398,12 +398,21 @@ const mainLoop = async () => {
     let scansSinceLog = 0;
     let lastPositionReport = Date.now();  // 持仓汇报时间
     let lastPriceLog = Date.now();
+    let lastApiSyncTime = Date.now();  // API 仓位同步时间
+    const API_SYNC_INTERVAL = 30000;   // 30 秒同步一次
     
     // 高速主循环
     while (true) {
         try {
             stats.scans++;
             scansSinceLog++;
+            
+            // 🔄 定期从 API 同步仓位（实盘模式）
+            const currentTime = Date.now();
+            if (!CONFIG.SIMULATION_MODE && currentTime - lastApiSyncTime >= API_SYNC_INTERVAL) {
+                lastApiSyncTime = currentTime;
+                await syncPositionsFromAPI();
+            }
             
             // 检查对冲/止损状态（优先于套利）
             let opportunities: ArbitrageOpportunity[] = [];

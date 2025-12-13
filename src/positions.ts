@@ -1236,8 +1236,19 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             }
         }
         
-        if (created > 0 || synced > 0) {
-            Logger.info(`🔄 API同步: 创建 ${created} 个, 校正 ${synced} 个仓位`);
+        // 始终显示同步结果
+        Logger.info(`🔄 API同步完成: 扫描 ${positionsByConditionId.size} 个, 创建 ${created} 个, 校正 ${synced} 个仓位`);
+        
+        // 显示当前本地仓位状态
+        const localCount = positions.size;
+        if (localCount > 0) {
+            for (const pos of positions.values()) {
+                if (pos.upShares > 0.1 || pos.downShares > 0.1) {
+                    Logger.info(`   📦 ${pos.slug.slice(0, 25)}: Up=${pos.upShares.toFixed(1)} Down=${pos.downShares.toFixed(1)}`);
+                }
+            }
+        } else {
+            Logger.warning(`   ⚠️ 本地仓位为空`);
         }
     } catch (error: any) {
         Logger.error(`❌ API 同步失败: ${error.message || error}`);

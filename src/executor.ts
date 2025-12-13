@@ -27,9 +27,9 @@ const lastTradeTime = new Map<string, number>();
 const lastFailTime = new Map<string, number>();
 const FAIL_COOLDOWN_MS = 3000;  // 失败后冷却 3 秒
 
-// API 同步冷却（防止频繁校正覆盖正确数据）
+// API 同步冷却（定期同步，不依赖成交结果）
 let lastSyncTime = 0;
-const SYNC_COOLDOWN_MS = 5000;  // 5 秒内只同步一次
+const SYNC_COOLDOWN_MS = 30000;  // 30 秒同步一次
 
 // 🔒 同池增持并发锁：同一时间段+资产+方向只能有一个订单在执行
 // Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
@@ -399,6 +399,9 @@ const executeBuy = async (
     outcome: string,
     isSamePool: boolean = false  // 是否为同池套利
 ): Promise<{ success: boolean; filled: number; avgPrice: number; cost: number }> => {
+    // 🔧 精度控制：Polymarket 要求 shares 最多 2 位小数
+    shares = Math.floor(shares * 100) / 100;
+    
     const estimatedCost = shares * limitPrice;
     
     // 模拟模式：直接返回成功
@@ -413,10 +416,12 @@ const executeBuy = async (
     // FAK 订单的 price 是最高可接受价格，如果不加容差，市场轻微波动就会导致不成交
     // 🔧 统一使用 PRICE_TOLERANCE_PERCENT，跨池和同池都生效
     const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
-    const orderPrice = Math.min(limitPrice * tolerance, 0.99);
+    // 🔧 精度控制：价格 2 位小数
+    const orderPrice = Math.floor(Math.min(limitPrice * tolerance, 0.99) * 100) / 100;
     
     // 用 orderPrice 计算 amount，尽可能多吃深度
-    const amount = shares * orderPrice;
+    // 🔧 精度控制：金额 2 位小数
+    const amount = Math.floor(shares * orderPrice * 100) / 100;
     
     // Polymarket 最小订单金额是 $1，如果不足则跳过
     if (amount < CONFIG.MIN_ORDER_AMOUNT_USD) {
@@ -430,44 +435,65 @@ const executeBuy = async (
         price: orderPrice 
     };
     
+    // 调试：显示实际下单参数（精度检查）
+    Logger.info(`📤 ${outcome}: ${shares.toFixed(2)} shares @ 限价$${orderPrice.toFixed(2)} | 金额$${amount.toFixed(2)} (原价$${limitPrice.toFixed(3)} +${CONFIG.PRICE_TOLERANCE_PERCENT}%)`);
+    
     // 执行订单（不再禁用 console，避免卡死问题）
     try {
         const signedOrder = await client.createMarketOrder(orderArgs);
         const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
-            // 🔍 调试：打印 API 返回的所有字段
-            Logger.info(`🔍 API响应字段: ${Object.keys(resp).join(', ')}`);
-            Logger.info(`🔍 takingAmount=${resp.takingAmount} makingAmount=${resp.makingAmount} fills=${JSON.stringify(resp.fills || resp.matched || []).slice(0,100)}`);
+            // 🔍 调试：打印 API 返回的完整信息
+            const txHashCount = resp.transactionsHashes?.length || 0;
+            const fillsCount = resp.fills?.length || 0;
+            const matchedCount = (resp as any).matched?.length || 0;
+            Logger.info(`🔍 API响应: success=${resp.success} status=${resp.status} orderID=${resp.orderID?.slice(0,8)}`);
+            Logger.info(`🔍 数量: takingAmount=${resp.takingAmount} makingAmount=${resp.makingAmount}`);
+            Logger.info(`🔍 成交: txHashes=${txHashCount}个 fills=${fillsCount}个 matched=${matchedCount}个`);
+            if (txHashCount > 0) {
+                Logger.info(`🔍 txHashes: ${JSON.stringify(resp.transactionsHashes)}`);
+            }
+            if (fillsCount > 0) {
+                Logger.info(`🔍 fills: ${JSON.stringify(resp.fills).slice(0, 200)}`);
+            }
             
             // 🔧 尝试从多个可能的字段获取成交数量
             let actualShares = 0;
             let actualCost = 0;
             
-            // 方式1: takingAmount/makingAmount
-            if (resp.takingAmount) {
-                actualShares = parseFloat(resp.takingAmount) / 1e6;
-                actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
-            }
-            // 方式2: fills 数组
-            else if (resp.fills && Array.isArray(resp.fills) && resp.fills.length > 0) {
+            // 🔧 优先从 fills/matched 数组获取实际成交（最可靠）
+            // fills 为空说明没有成交，即使 success=true 也当作失败
+            
+            // 方式1: fills 数组
+            if (resp.fills && Array.isArray(resp.fills) && resp.fills.length > 0) {
                 for (const fill of resp.fills) {
                     actualShares += parseFloat(fill.size || fill.amount || 0);
                     actualCost += parseFloat(fill.price || 0) * parseFloat(fill.size || fill.amount || 0);
                 }
             }
-            // 方式3: matched 数组
+            // 方式2: matched 数组
             else if (resp.matched && Array.isArray(resp.matched) && resp.matched.length > 0) {
                 for (const match of resp.matched) {
                     actualShares += parseFloat(match.size || match.amount || 0);
                     actualCost += parseFloat(match.price || 0) * parseFloat(match.size || match.amount || 0);
                 }
             }
-            // 方式4: 回退到请求值
-            else {
-                actualShares = shares;
-                actualCost = amount;
+            // 方式3: transactionsHashes 不为空说明有链上成交，用 takingAmount
+            else if (resp.transactionsHashes && Array.isArray(resp.transactionsHashes) && resp.transactionsHashes.length > 0 && resp.takingAmount) {
+                const rawShares = parseFloat(resp.takingAmount);
+                const rawCost = resp.makingAmount ? parseFloat(resp.makingAmount) : amount;
+                // 智能判断单位
+                if (rawShares > 1000) {
+                    actualShares = rawShares / 1e6;
+                    actualCost = rawCost / 1e6;
+                } else {
+                    actualShares = rawShares;
+                    actualCost = rawCost;
+                }
             }
+            // 方式4: fills 为空，没有成交
+            // 不再回退到请求值，这样会导致虚假成交记录
             
             const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
             
@@ -630,12 +656,13 @@ const executeArbitrageInternal = async (
         
         // 如果任一边深度不足，跳过
         if (maxUpShares < 1 || maxDownShares < 1) {
-            Logger.warning(`❌ ${crossTag} 深度不足: Up=${opportunity.upAskSize.toFixed(0)} Down=${opportunity.downAskSize.toFixed(0)}`);
+            Logger.info(`⏭️ 跳过: 深度不足 Up=${maxUpShares.toFixed(1)} Down=${maxDownShares.toFixed(1)}`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
         
         // 取两边能买到的 shares 的最小值，确保配对平衡
-        let targetShares = Math.min(maxUpShares, maxDownShares);
+        // 🔧 精度控制：Polymarket 要求 shares 最多 2 位小数
+        let targetShares = Math.floor(Math.min(maxUpShares, maxDownShares) * 100) / 100;
         
         // 计算需要多少钱（USD）来买这些 shares
         const combinedCost = opportunity.upAskPrice + opportunity.downAskPrice;
@@ -657,8 +684,8 @@ const executeArbitrageInternal = async (
         const downAmount = targetShares * opportunity.downAskPrice;
         
         if (upAmount < CONFIG.MIN_ORDER_AMOUNT_USD || downAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
-            // 预算太小，无法让两边都满足 $1
-            // 静默跳过
+            // 预算太小，无法让两边都满足 $1（显示原因）
+            Logger.info(`⏭️ 跳过: Up=$${upAmount.toFixed(2)} Down=$${downAmount.toFixed(2)} 有一边<$1`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
         
@@ -667,7 +694,8 @@ const executeArbitrageInternal = async (
         const expectedProfitCheck = targetShares - finalCost;  // 套利利润 = shares数 - 总成本（因为每对赎回 $1）
         
         if (expectedProfitCheck < CONFIG.MIN_PROFIT_USD) {
-            // 利润太小，静默跳过
+            // 利润太小，跳过（显示原因）
+            Logger.info(`⏭️ 跳过: 预期利润$${expectedProfitCheck.toFixed(2)} < $${CONFIG.MIN_PROFIT_USD}`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
         
@@ -796,15 +824,13 @@ const executeArbitrageInternal = async (
         );
     }
     
-    // ⚠️ API 同步改为低频调用（防止频繁校正覆盖正确数据）
-    // 原因：API 有 1-3 秒延迟，太频繁会把正确的本地数据覆盖成过时的 API 数据
-    // 改为：10 秒内只同步一次，直接同步不延迟
-    if (upResult.success || downResult.success) {
-        const now = Date.now();
-        if (now - lastSyncTime >= SYNC_COOLDOWN_MS) {
-            lastSyncTime = now;
-            await syncPositionsFromAPI();
-        }
+    // ⚠️ API 同步：定期同步，不依赖成交结果
+    // 原因：fills=[] 可能为空但实际有成交，或者 API 返回延迟
+    // 改为：每 30 秒自动同步一次
+    const now = Date.now();
+    if (now - lastSyncTime >= SYNC_COOLDOWN_MS) {
+        lastSyncTime = now;
+        await syncPositionsFromAPI();
     }
     
     const totalCost = upResult.cost + downResult.cost;
@@ -915,6 +941,9 @@ export const executeSell = async (
     bidPrice: number,
     label: string
 ): Promise<{ success: boolean; received: number }> => {
+    // 🔧 精度控制：shares 最多 2 位小数
+    shares = Math.floor(shares * 100) / 100;
+    
     // 模拟模式
     if (CONFIG.SIMULATION_MODE) {
         const received = shares * bidPrice;
@@ -925,8 +954,9 @@ export const executeSell = async (
     const client = await initClient();
     
     // 稍微低于 bid 价格确保成交
-    const sellPrice = Math.max(0.01, bidPrice * 0.995);
-    const amountUSD = shares * sellPrice;
+    // 🔧 精度控制：价格和金额 2 位小数
+    const sellPrice = Math.floor(Math.max(0.01, bidPrice * 0.995) * 100) / 100;
+    const amountUSD = Math.floor(shares * sellPrice * 100) / 100;
     
     // Polymarket 最小订单金额 $1
     if (amountUSD < CONFIG.MIN_ORDER_AMOUNT_USD) {
