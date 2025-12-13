@@ -1262,13 +1262,22 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
         }
         
         // 🗑️ 删除 API 中不存在的本地仓位（已赎回/结算的仓位）
+        // ⚠️ 注意：不删除刚创建的仓位（API 同步有延迟）
         let deleted = 0;
         const localConditionIds = Array.from(positions.keys());
+        const now = Date.now();
         for (const localCondId of localConditionIds) {
             // 检查这个 conditionId 是否在 API 返回的仓位中
             if (!positionsByConditionId.has(localCondId)) {
                 const localPos = positions.get(localCondId);
                 if (localPos) {
+                    // 🔧 关键修复：如果仓位是最近 30 秒内创建的，不删除（API 同步有延迟）
+                    const age = now - (localPos.lastUpdate || 0);
+                    if (age < 30 * 1000) {
+                        Logger.info(`   ⏳ 保留新仓位: ${localPos.slug.slice(0, 25)} (${(age / 1000).toFixed(0)}秒前创建)`);
+                        continue;
+                    }
+                    
                     Logger.warning(`🗑️ 删除已结算仓位: ${localPos.slug.slice(0, 30)}`);
                     positions.delete(localCondId);
                     deleteFromStorage(localCondId);

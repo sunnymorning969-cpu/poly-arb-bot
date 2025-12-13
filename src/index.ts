@@ -427,16 +427,18 @@ const mainLoop = async () => {
             const currentPosStats = getPositionStats();
             const currentOverallStats = getOverallStats();
             
-            // 更新参与状态：有交易记录或有仓位就算已参与
-            if (currentOverallStats.totalSettled > 0 || currentPosStats.totalPositions > 0 || stats.tradesExecuted > 0) {
+            // 🔧 修复：只跟踪本次启动后的交易，不包括启动前的历史结算
+            // 更新参与状态：本次启动后有成功交易才算已参与
+            if (stats.tradesSuccessful > 0) {
                 hasParticipatedInEvent = true;
             }
             
             // 判断是否应该停止开新仓
-            // 条件：不继续参与 + 已参与过 + 当前无仓位 = 事件已完成，等待模式
+            // 条件：不继续参与 + 本次启动后有交易 + 这些交易都已结算（无仓位） = 进入观望模式
             const shouldStopNewTrades = !CONFIG.CONTINUE_NEXT_EVENT && 
                                         hasParticipatedInEvent && 
-                                        currentPosStats.totalPositions === 0;
+                                        currentPosStats.totalPositions === 0 &&
+                                        stats.tradesSuccessful > 0;
             
             // 打印一次事件完成日志
             if (shouldStopNewTrades && !eventCompletedLogged) {
