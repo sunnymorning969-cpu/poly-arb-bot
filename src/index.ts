@@ -400,11 +400,12 @@ const mainLoop = async () => {
     let lastPositionReport = Date.now();  // 持仓汇报时间
     let lastPriceLog = Date.now();
     let lastApiSyncTime = Date.now();  // API 仓位同步时间
-    const API_SYNC_INTERVAL = 10000;   // 10 秒同步一次
+    const API_SYNC_INTERVAL = 5000;    // 5 秒同步一次
     
     // 🔄 事件参与状态追踪
     let hasParticipatedInEvent = false;  // 是否已参与过事件（有过交易或仓位）
     let eventCompletedLogged = false;    // 是否已打印事件完成日志（避免重复）
+    let isSyncingPositions = false;      // 🔒 仓位同步锁（同步期间暂停开仓）
     
     // 高速主循环
     while (true) {
@@ -413,10 +414,13 @@ const mainLoop = async () => {
             scansSinceLog++;
             
             // 🔄 定期从 API 同步仓位（实盘模式）
+            // 🔒 同步期间设置锁，防止新开仓导致数据不一致
             const currentTime = Date.now();
             if (!CONFIG.SIMULATION_MODE && currentTime - lastApiSyncTime >= API_SYNC_INTERVAL) {
                 lastApiSyncTime = currentTime;
+                isSyncingPositions = true;
                 await syncPositionsFromAPI();
+                isSyncingPositions = false;
             }
             
             // 🔄 检查是否应该停止开新仓（事件结束后不继续）
@@ -448,7 +452,8 @@ const mainLoop = async () => {
             
             // 检查对冲/止损状态（优先于套利）
             let opportunities: ArbitrageOpportunity[] = [];
-            let shouldSkipArbitrage = shouldStopNewTrades;  // 如果已完成事件，跳过套利
+            // 🔒 同步中或事件已完成时跳过套利
+            let shouldSkipArbitrage = shouldStopNewTrades || isSyncingPositions;
             
             // 币安波动率检查（无论什么模式都要检查）
             for (const timeGroup of ['15min', '1hr'] as const) {
