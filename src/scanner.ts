@@ -607,34 +607,12 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
                 tradingAction = 'buy_both';
                 priority = (1.0 - groupPrediction.newAvgCostPerPair) * 100;
             }
-            // 2b: 组合需要更多 Up，且 Up 便宜
-            else if (groupAnalysis.needMoreUp && upIsCheap) {
-                const upOnlyPrediction = predictGroupCostAfterBuy(
-                    timeGroup,
-                    Math.min(cheapestUp.upBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
-                    upPrice,
-                    0,
-                    downPrice
-                );
-                if (upOnlyPrediction.newAvgCostPerPair < 0.995) {
-                    tradingAction = 'buy_up_only';
-                    priority = 8;
-                }
-            }
-            // 2c: 组合需要更多 Down，且 Down 便宜
-            else if (groupAnalysis.needMoreDown && downIsCheap) {
-                const downOnlyPrediction = predictGroupCostAfterBuy(
-                    timeGroup,
-                    0,
-                    upPrice,
-                    Math.min(cheapestDown.downBook.bestAskSize, Math.abs(groupAnalysis.imbalance) + 50),
-                    downPrice
-                );
-                if (downOnlyPrediction.newAvgCostPerPair < 0.995) {
-                    tradingAction = 'buy_down_only';
-                    priority = 8;
-                }
-            }
+            // ⚠️ 策略 2b 和 2c 已禁用！
+            // 这两个策略会导致单边疯狂买入：
+            // - buy_up_only 买完后 Up > Down，触发 buy_down_only
+            // - buy_down_only 买完后 Down > Up，触发 buy_up_only
+            // - 形成循环，导致仓位严重失衡
+            // 仓位平衡应该由 generateSamePoolOpportunities（同池增持）处理
         }
         
         // 只添加有动作的机会

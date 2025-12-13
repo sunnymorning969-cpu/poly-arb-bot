@@ -758,7 +758,14 @@ const executeArbitrageInternal = async (
     if (!CONFIG.SIMULATION_MODE) {
         const balance = await getBalance();
         if (balance < totalCostNeeded) {
-            Logger.error(`余额不足: $${balance.toFixed(2)} < $${totalCostNeeded.toFixed(2)}`);
+            // 余额不足时只打印一次，避免刷屏
+            const cooldownKey = `balance_warning_${opportunity.timeGroup}`;
+            const lastWarning = lastTradeTime.get(cooldownKey) || 0;
+            const now = Date.now();
+            if (now - lastWarning >= 30000) {  // 30秒冷却
+                lastTradeTime.set(cooldownKey, now);
+                Logger.error(`余额不足: $${balance.toFixed(2)} < $${totalCostNeeded.toFixed(2)}`);
+            }
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
     }
@@ -855,11 +862,12 @@ const executeArbitrageInternal = async (
     
     // 记录下单时间（同池增持不记录冷却，以便连续快速执行）
     if (!opportunity.isSamePoolRebalance) {
-        if (upResult.success) {
-            recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
-        }
+        // 🔧 关键修复：无论成功失败都记录冷却，防止部分成交后疯狂重试
+        // 部分成交（一边成功一边失败）会导致仓位失衡，需要等待足够时间再重试
+        recordTradePrice(opportunity.conditionId, opportunity.upAskPrice, opportunity.downAskPrice);
+        
         // 跨池套利时记录两个市场
-        if (downResult.success && opportunity.isCrossPool && opportunity.downConditionId) {
+        if (opportunity.isCrossPool && opportunity.downConditionId) {
             recordTradePrice(opportunity.downConditionId, opportunity.upAskPrice, opportunity.downAskPrice);
         }
     }
