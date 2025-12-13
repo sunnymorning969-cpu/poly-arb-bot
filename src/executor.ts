@@ -706,9 +706,9 @@ const executeArbitrageInternal = async (
         
         // 计算需要多少钱（USD）来买这些 shares
         const combinedCost = opportunity.upAskPrice + opportunity.downAskPrice;
-        const totalCostNeeded = targetShares * combinedCost;
         
-        // Polymarket 最小订单金额 $1：计算两边各自满足 $1 所需的最少 shares（精确值，不取整）
+        // Polymarket 最小订单金额 $1：计算两边各自满足 $1 所需的最少 shares
+        // 🔧 关键：必须取两边的最大值，确保价格低的那边也能满足 $1
         const minSharesForUp = CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.upAskPrice;
         const minSharesForDown = CONFIG.MIN_ORDER_AMOUNT_USD / opportunity.downAskPrice;
         const minSharesRequired = Math.max(minSharesForUp, minSharesForDown);
@@ -716,18 +716,23 @@ const executeArbitrageInternal = async (
         // 预算允许的最大股数
         const maxAffordableShares = (CONFIG.MAX_ORDER_SIZE_USD * 2) / combinedCost;
         
-        // targetShares 受三个限制：深度、预算、$1 最低要求
-        targetShares = Math.min(targetShares, maxAffordableShares);  // 不超过预算
-        
-        // 检查：在预算范围内，两边是否都能满足 $1 最低要求
-        const upAmount = targetShares * opportunity.upAskPrice;
-        const downAmount = targetShares * opportunity.downAskPrice;
-        
-        if (upAmount < CONFIG.MIN_ORDER_AMOUNT_USD || downAmount < CONFIG.MIN_ORDER_AMOUNT_USD) {
-            // 预算太小，无法让两边都满足 $1（显示原因）
-            Logger.info(`⏭️ 跳过: Up=$${upAmount.toFixed(2)} Down=$${downAmount.toFixed(2)} 有一边<$1`);
+        // 🔧 修复：先确保 targetShares >= minSharesRequired，再限制预算
+        // 如果深度不足以满足 $1 最低要求，跳过
+        if (targetShares < minSharesRequired) {
+            Logger.info(`⏭️ 跳过: 深度不足以满足$1最低要求 需${minSharesRequired.toFixed(1)}shares 深度仅${targetShares.toFixed(1)}shares`);
             return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
         }
+        
+        // 如果预算不足以满足 $1 最低要求，跳过
+        if (maxAffordableShares < minSharesRequired) {
+            const upAmount = minSharesRequired * opportunity.upAskPrice;
+            const downAmount = minSharesRequired * opportunity.downAskPrice;
+            Logger.info(`⏭️ 跳过: 预算不足 需$${(upAmount + downAmount).toFixed(2)} 预算$${(CONFIG.MAX_ORDER_SIZE_USD * 2).toFixed(2)}`);
+            return { success: false, upFilled: 0, downFilled: 0, totalCost: 0, expectedProfit: 0 };
+        }
+        
+        // 正常情况：取 [minSharesRequired, min(深度, 预算)] 之间的最大值
+        targetShares = Math.min(targetShares, maxAffordableShares);
         
         // 计算预期利润，如果太小就跳过
         const finalCost = targetShares * combinedCost;

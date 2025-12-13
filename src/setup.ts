@@ -288,6 +288,39 @@ const main = async () => {
         config.MIN_CROSS_POOL_SINGLE_PRICE = '0.25';
     }
     
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('跨池最小第一档深度 - 防止一边吃满一边吃不到');
+    log.info('');
+    log.info('  两边第一档深度（折U）都必须 >= 此值才做跨池');
+    log.info('  实际限制 = max(2×单笔金额, 此值)');
+    log.info('');
+    log.info('  示例：单笔$1, 此值$5 → 限制$5');
+    log.info('        单笔$5, 此值$5 → 限制$10');
+    log.info('═══════════════════════════════════════════════════════');
+    const currentMinDepth = config.MIN_CROSS_POOL_DEPTH_USD || '5';
+    const minDepth = await question(`跨池最小深度 USD (当前: ${currentMinDepth}): `);
+    if (minDepth && !isNaN(parseFloat(minDepth))) {
+        config.MIN_CROSS_POOL_DEPTH_USD = minDepth;
+    } else if (!config.MIN_CROSS_POOL_DEPTH_USD) {
+        config.MIN_CROSS_POOL_DEPTH_USD = '5';
+    }
+    
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('跨池部分成交冷却 - 防止单边快速增长');
+    log.info('');
+    log.info('  部分成交（一边成功一边失败）后暂停跨池');
+    log.info('  等待订单簿更新，防止重复下单');
+    log.info('═══════════════════════════════════════════════════════');
+    const currentPartialCooldown = config.CROSS_POOL_PARTIAL_COOLDOWN_MS || '1500';
+    const partialCooldown = await question(`部分成交冷却 ms (当前: ${currentPartialCooldown}): `);
+    if (partialCooldown && !isNaN(parseInt(partialCooldown))) {
+        config.CROSS_POOL_PARTIAL_COOLDOWN_MS = partialCooldown;
+    } else if (!config.CROSS_POOL_PARTIAL_COOLDOWN_MS) {
+        config.CROSS_POOL_PARTIAL_COOLDOWN_MS = '1500';
+    }
+    
     const currentMinProfit = config.MIN_PROFIT_USD || '0.01';
     const minProfit = await question(`最小利润额 USD (当前: ${currentMinProfit}): `);
     if (minProfit && !isNaN(parseFloat(minProfit))) {
