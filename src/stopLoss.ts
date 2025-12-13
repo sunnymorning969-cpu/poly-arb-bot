@@ -4,7 +4,6 @@
  */
 
 import { TimeGroup } from './positions';
-import { ArbitrageOpportunity } from './scanner';
 
 // 紧急模式状态
 const emergencyModes = new Map<string, boolean>();
@@ -62,24 +61,16 @@ export const clearEmergencyMode = (timeGroup: TimeGroup): void => {
 };
 
 /**
- * 检查止损信号
+ * 检查止损信号（返回数组）
  */
-export const checkStopLossSignals = (timeGroup: TimeGroup): {
-    shouldStopLoss: boolean;
-    reason: string;
-    riskRatio: number;
-} => {
-    return {
-        shouldStopLoss: false,
-        reason: '',
-        riskRatio: 0,
-    };
+export const checkStopLossSignals = (timeGroup?: TimeGroup): any[] => {
+    return [];
 };
 
 /**
  * 执行止损
  */
-export const executeStopLoss = async (timeGroup: TimeGroup): Promise<{
+export const executeStopLoss = async (executeSellFn?: any, signal?: any): Promise<{
     success: boolean;
     soldShares: number;
     received: number;
@@ -92,33 +83,49 @@ export const executeStopLoss = async (timeGroup: TimeGroup): Promise<{
 };
 
 /**
- * 获取止损状态
+ * 获取止损状态（无参数版本）
  */
-export const getStopLossStatus = (timeGroup: TimeGroup): {
+export const getStopLossStatus = (timeGroup?: TimeGroup): {
+    enabled: boolean;
     isMonitoring: boolean;
     riskCount: number;
     totalCount: number;
     riskRatio: number;
+    windowSec: number;
+    costThreshold: number;
+    minTriggerCount: number;
 } => {
     return {
+        enabled: false,
         isMonitoring: false,
         riskCount: 0,
         totalCount: 0,
         riskRatio: 0,
+        windowSec: 180,
+        costThreshold: 0.6,
+        minTriggerCount: 30,
     };
 };
 
 /**
- * 是否应该暂停交易
+ * 是否应该暂停交易（返回对象）
  */
-export const shouldPauseTrading = (timeGroup: TimeGroup): boolean => {
-    return false;
+export const shouldPauseTrading = (timeGroup: TimeGroup): {
+    pause: boolean;
+    shouldHedge: boolean;
+    reason: string;
+} => {
+    return {
+        pause: false,
+        shouldHedge: false,
+        reason: '',
+    };
 };
 
 /**
  * 检查币安波动率
  */
-export const checkBinanceVolatility = (timeGroup: TimeGroup): {
+export const checkBinanceVolatility = (timeGroup: TimeGroup, endTime?: Date): {
     shouldHedge: boolean;
     volatility: number;
 } => {
@@ -136,9 +143,13 @@ export const getTriggeredSignal = (timeGroup: TimeGroup): string | null => {
 };
 
 /**
- * 记录套利机会
+ * 记录套利机会（3个参数版本）
  */
-export const recordArbitrageOpportunity = (opportunity: ArbitrageOpportunity): void => {
+export const recordArbitrageOpportunity = (
+    timeGroup: TimeGroup | any,
+    combinedCost?: number,
+    endDate?: string
+): void => {
     // 占位
 };
 
@@ -149,18 +160,17 @@ export const checkExtremeImbalance = (timeGroup: TimeGroup): {
     isExtreme: boolean;
     imbalancePercent: number;
     sellSide: 'up' | 'down' | null;
-} => {
-    return {
-        isExtreme: false,
-        imbalancePercent: 0,
-        sellSide: null,
-    };
+} | null => {
+    return null;
 };
 
 /**
  * 执行极端不平衡卖出
  */
-export const executeExtremeImbalanceSell = async (timeGroup: TimeGroup): Promise<{
+export const executeExtremeImbalanceSell = async (
+    executeSellFn?: any,
+    signal?: any
+): Promise<{
     success: boolean;
     soldShares: number;
     received: number;

@@ -153,11 +153,15 @@ export const getGlobalHedgeStats = (): {
     totalHedgeCost: number;
     totalHedgeShares: number;
     hedgeCount: number;
+    totalHedgeEvents: number;
+    completedHedgeEvents: number;
 } => {
     return {
         totalHedgeCost: 0,
         totalHedgeShares: 0,
         hedgeCount: 0,
+        totalHedgeEvents: 0,
+        completedHedgeEvents: 0,
     };
 };
 
