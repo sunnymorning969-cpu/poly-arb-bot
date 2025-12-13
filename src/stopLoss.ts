@@ -125,7 +125,7 @@ export const shouldPauseTrading = (timeGroup: TimeGroup): {
 /**
  * 检查币安波动率
  */
-export const checkBinanceVolatility = (timeGroup: TimeGroup, endTime?: Date): {
+export const checkBinanceVolatility = (timeGroup: TimeGroup, endTime?: Date | string): {
     shouldHedge: boolean;
     volatility: number;
 } => {

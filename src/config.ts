@@ -48,8 +48,10 @@ export const CONFIG = {
     MIN_ORDER_AMOUNT_USD: 1.0,
     
     // 出价容忍度（%）：实际出价比扫描价格高多少，提高成交率
-    // 例如：扫描到 $0.60，容忍度 1%，实际出价 $0.606
-    PRICE_TOLERANCE_PERCENT: parseFloat(process.env.PRICE_TOLERANCE_PERCENT || '0.5'),
+    // 🔧 跨池和同池都生效（之前仅同池）
+    // 例如：扫描到 $0.60，容忍度 2%，实际出价 $0.612
+    // 注意：需要配合 MIN_ARBITRAGE_PERCENT 使用，确保利润 > 容忍度
+    PRICE_TOLERANCE_PERCENT: parseFloat(process.env.PRICE_TOLERANCE_PERCENT || '2'),
     
     // 跨池套利单边最低价格：两边价格都必须 >= 此值才做跨池套利
     // 避免在走势极端时（如 BTC Down $0.10）进行高风险套利
