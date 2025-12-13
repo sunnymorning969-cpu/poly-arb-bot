@@ -518,11 +518,24 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
     const btcStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     
+    const now = Date.now();
+    
     for (const pos of positions.values()) {
         // 🔧 修复：只用 slug 判断资产类型（title 可能同时包含 BTC 和 ETH）
         const slugLower = pos.slug.toLowerCase();
         const titleLower = pos.title.toLowerCase();
         const combined = slugLower + ' ' + titleLower;
+        
+        // 🔧 关键修复：检查事件是否已过期（slug 中的时间戳）
+        // slug 格式：eth-updown-15m-1765622700，最后的数字是结束时间戳（秒）
+        const timestampMatch = slugLower.match(/(\d{10})$/);
+        if (timestampMatch) {
+            const endTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
+            // 如果事件已经结束超过 2 分钟，跳过（等待结算清理）
+            if (endTimestamp < now - 2 * 60 * 1000) {
+                continue;  // 跳过已过期的事件
+            }
+        }
         
         // 判断是否属于指定 timeGroup
         // 15min 事件通常在 title 中有 "5:45PM-6:00PM" 等 15 分钟间隔
@@ -1169,6 +1182,18 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 continue;
             }
             
+            // 🔧 关键修复：跳过已过期的事件，避免重新创建已赎回的仓位
+            // slug 格式：eth-updown-15m-1765622700，最后的数字是结束时间戳（秒）
+            const timestampMatch = slugLower.match(/(\d{10})$/);
+            if (timestampMatch) {
+                const endTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
+                const now = Date.now();
+                // 如果事件已经结束超过 2 分钟，跳过（已赎回，API 返回有延迟）
+                if (endTimestamp < now - 2 * 60 * 1000) {
+                    continue;
+                }
+            }
+            
             // 从 API 数据提取 Up/Down shares 和 avgPrice
             let apiUpShares = 0;
             let apiDownShares = 0;
@@ -1236,8 +1261,24 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             }
         }
         
+        // 🗑️ 删除 API 中不存在的本地仓位（已赎回/结算的仓位）
+        let deleted = 0;
+        const localConditionIds = Array.from(positions.keys());
+        for (const localCondId of localConditionIds) {
+            // 检查这个 conditionId 是否在 API 返回的仓位中
+            if (!positionsByConditionId.has(localCondId)) {
+                const localPos = positions.get(localCondId);
+                if (localPos) {
+                    Logger.warning(`🗑️ 删除已结算仓位: ${localPos.slug.slice(0, 30)}`);
+                    positions.delete(localCondId);
+                    deleteFromStorage(localCondId);
+                    deleted++;
+                }
+            }
+        }
+        
         // 始终显示同步结果
-        Logger.info(`🔄 API同步完成: 扫描 ${positionsByConditionId.size} 个, 创建 ${created} 个, 校正 ${synced} 个仓位`);
+        Logger.info(`🔄 API同步完成: 扫描 ${positionsByConditionId.size} 个, 创建 ${created} 个, 校正 ${synced} 个, 删除 ${deleted} 个仓位`);
         
         // 显示当前本地仓位状态
         const localCount = positions.size;
