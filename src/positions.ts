@@ -519,8 +519,10 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
     const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     
     for (const pos of positions.values()) {
-        // 🔧 修复：使用 slug 和 title 一起判断
-        const combined = (pos.slug + ' ' + pos.title).toLowerCase();
+        // 🔧 修复：只用 slug 判断资产类型（title 可能同时包含 BTC 和 ETH）
+        const slugLower = pos.slug.toLowerCase();
+        const titleLower = pos.title.toLowerCase();
+        const combined = slugLower + ' ' + titleLower;
         
         // 判断是否属于指定 timeGroup
         // 15min 事件通常在 title 中有 "5:45PM-6:00PM" 等 15 分钟间隔
@@ -542,9 +544,9 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
         const posTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
         if (posTimeGroup !== timeGroup) continue;
         
-        // 🔧 修复：判断 BTC/ETH 也要检查 'bitcoin'/'ethereum'
-        const isBtc = combined.includes('btc') || combined.includes('bitcoin');
-        const isEth = combined.includes('eth') || combined.includes('ethereum');
+        // 🔧 修复：只用 slug 判断 BTC/ETH（不用 title，避免跨池 title 同时含 BTC+ETH）
+        const isBtc = slugLower.includes('btc') || slugLower.includes('bitcoin');
+        const isEth = slugLower.includes('eth') || slugLower.includes('ethereum');
         
         if (isBtc) {
             btcStats.upShares += pos.upShares;
