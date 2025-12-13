@@ -6,6 +6,10 @@
 SIMULATION_MODE=true
 # 启动时清除历史数据（true=从零开始）
 CLEAR_DATA_ON_START=false
+# 事件结束后是否继续参与下一个事件
+# false(默认)：事件结算后进入观望模式，不开新仓，但机器人继续运行可查看结算
+# true：事件结算后自动参与下一个事件
+CONTINUE_NEXT_EVENT=false
 
 # ========== 钱包配置（模拟模式可选，实盘模式必填）==========
 PRIVATE_KEY=

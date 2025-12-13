@@ -73,6 +73,7 @@ const saveConfig = (config: Record<string, string>): void => {
         '# ========== 模式 ==========',
         `SIMULATION_MODE=${config.SIMULATION_MODE || 'true'}`,
         `CLEAR_DATA_ON_START=${config.CLEAR_DATA_ON_START || 'false'}`,
+        `CONTINUE_NEXT_EVENT=${config.CONTINUE_NEXT_EVENT || 'false'}`,
         '',
         '# ========== 市场开关（0=关闭，1=开启）==========',
         `ENABLE_15MIN=${config.ENABLE_15MIN || '1'}`,
@@ -110,7 +111,7 @@ const saveConfig = (config: Record<string, string>): void => {
         `EMERGENCY_BALANCE_ENABLED=${config.EMERGENCY_BALANCE_ENABLED || 'true'}`,
         `EMERGENCY_BALANCE_SECONDS=${config.EMERGENCY_BALANCE_SECONDS || '20'}`,
         `EMERGENCY_BALANCE_THRESHOLD=${config.EMERGENCY_BALANCE_THRESHOLD || '60'}`,
-        `EMERGENCY_BALANCE_MAX_LOSS=${config.EMERGENCY_BALANCE_MAX_LOSS || '2'}`,
+        `EMERGENCY_BALANCE_MAX_LOSS=${config.EMERGENCY_BALANCE_MAX_LOSS || '5'}`,
         '',
         '# 极端不平衡提前平仓（平衡度<30%说明走势确定，平掉会输的一边）',
         `EXTREME_IMBALANCE_ENABLED=${config.EXTREME_IMBALANCE_ENABLED || 'true'}`,
@@ -228,6 +229,14 @@ const main = async () => {
     const clearData = await question('每次启动清除历史数据？(y/n，默认 n): ');
     config.CLEAR_DATA_ON_START = clearData.toLowerCase() === 'y' ? 'true' : 'false';
     
+    // ===== 事件结束后是否继续 =====
+    log.title('🔄 事件继续选项');
+    log.info('当前事件结束后是否自动参与下一个事件');
+    log.info('  - 否(默认)：事件结算后进入观望模式，不开新仓，但机器人继续运行');
+    log.info('  - 是：事件结算后自动参与下一个事件');
+    const continueNext = await question('事件结束后继续参与下一个事件？(y/n，默认 n): ');
+    config.CONTINUE_NEXT_EVENT = continueNext.toLowerCase() === 'y' ? 'true' : 'false';
+    
     // ===== 市场开关 =====
     log.title('📊 市场选择');
     log.info('可以选择只开启某个时间段的市场');
@@ -249,12 +258,24 @@ const main = async () => {
         config.MAX_ORDER_SIZE_USD = '14';
     }
     
-    const currentPriceTolerance = config.PRICE_TOLERANCE_PERCENT || '0.5';
-    const priceTolerance = await question(`同池出价容忍度 % (仅同池套利加价提高成交率, 当前: ${currentPriceTolerance}): `);
+    console.log('');
+    log.info('═══════════════════════════════════════════════════════');
+    log.info('出价容忍度 - 提高成交率（跨池和同池都生效）');
+    log.info('');
+    log.info('  下单价格 = 扫描价格 × (1 + 容忍度%)');
+    log.info('');
+    log.info('  示例（容忍度 2%）：');
+    log.info('    扫描到 Up $0.50，实际下单 $0.51');
+    log.info('');
+    log.info('  ⚠️ 容忍度会消耗利润，需要配合 MIN_ARBITRAGE_PERCENT');
+    log.info('  建议：容忍度 < 最小利润率 / 2');
+    log.info('═══════════════════════════════════════════════════════');
+    const currentPriceTolerance = config.PRICE_TOLERANCE_PERCENT || '2';
+    const priceTolerance = await question(`出价容忍度 % (当前: ${currentPriceTolerance}): `);
     if (priceTolerance && !isNaN(parseFloat(priceTolerance))) {
         config.PRICE_TOLERANCE_PERCENT = priceTolerance;
     } else if (!config.PRICE_TOLERANCE_PERCENT) {
-        config.PRICE_TOLERANCE_PERCENT = '0.5';
+        config.PRICE_TOLERANCE_PERCENT = '2';
     }
     
     const currentMinSinglePrice = config.MIN_CROSS_POOL_SINGLE_PRICE || '0.25';
@@ -287,12 +308,12 @@ const main = async () => {
     log.info('  设置 5% 意味着只做组合成本 < $0.95 的交易');
     log.info('  太低（如 0.1%）会接受高成本低利润的交易，亏损时损失大');
     log.info('═══════════════════════════════════════════════════════');
-    const currentMinArbPercent = config.MIN_ARBITRAGE_PERCENT || '2';
+    const currentMinArbPercent = config.MIN_ARBITRAGE_PERCENT || '6';
     const minArbPercent = await question(`最小利润率 % (当前: ${currentMinArbPercent}): `);
     if (minArbPercent && !isNaN(parseFloat(minArbPercent))) {
         config.MIN_ARBITRAGE_PERCENT = minArbPercent;
     } else if (!config.MIN_ARBITRAGE_PERCENT) {
-        config.MIN_ARBITRAGE_PERCENT = '2';
+        config.MIN_ARBITRAGE_PERCENT = '6';
     }
     
     console.log('');
@@ -538,7 +559,7 @@ const main = async () => {
         if (safetyMargin && !isNaN(parseFloat(safetyMargin))) {
             config.SAME_POOL_SAFETY_MARGIN = safetyMargin;
         } else if (!config.SAME_POOL_SAFETY_MARGIN) {
-            config.SAME_POOL_SAFETY_MARGIN = '3';
+            config.SAME_POOL_SAFETY_MARGIN = '2';
         }
         
         // ===== 紧急平衡 =====
@@ -707,14 +728,12 @@ const main = async () => {
     console.log(`     同池增持: ${config.SAME_POOL_REBALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
     if (config.SAME_POOL_REBALANCE_ENABLED === 'true') {
         const safetyMargin = config.SAME_POOL_SAFETY_MARGIN || '2';
-        const priceTolerance = config.PRICE_TOLERANCE_PERCENT || '0.5';
         console.log(`     允许亏损: ${safetyMargin}%（牺牲利润换取平衡成交）`);
-        console.log(`     出价加价: ${priceTolerance}%（仅同池，提高成交率）`);
         console.log(`     紧急平衡: ${config.EMERGENCY_BALANCE_ENABLED === 'true' ? '✅ 开启' : '❌ 关闭'}`);
         if (config.EMERGENCY_BALANCE_ENABLED === 'true') {
             const emergencySec = config.EMERGENCY_BALANCE_SECONDS || '20';
             const emergencyThreshold = config.EMERGENCY_BALANCE_THRESHOLD || '60';
-            const emergencyMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '3';
+            const emergencyMaxLoss = config.EMERGENCY_BALANCE_MAX_LOSS || '5';
             console.log(`       └─ 触发: 最后 ${emergencySec}秒 + 平衡度 < ${emergencyThreshold}%`);
             console.log(`       └─ 放宽: 组合价 < ${(1 + parseFloat(emergencyMaxLoss)/100).toFixed(2)}（允许 ${emergencyMaxLoss}% 亏损）`);
         }
@@ -733,14 +752,14 @@ const main = async () => {
     console.log('');
     console.log('  有效交易区间：');
     console.log('  ┌─────────────────────────────────────────────────────┐');
-    console.log(`  │  $${(1 - parseFloat(initial)/100).toFixed(2)} ─────────────────────────────── $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100)).toFixed(2)}  │`);
+    console.log(`  │  $${(1 - parseFloat(initial)/100).toFixed(2)} ─────────────────────────────── $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '6') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '6') / 100)).toFixed(2)}  │`);
     console.log('  │    ↑                                         ↑     │');
     console.log('  │  组合成本下限                          利润率下限   │');
     console.log('  │  (敞口限制)                            (MIN_ARB%)   │');
     console.log('  └─────────────────────────────────────────────────────┘');
     console.log('');
     console.log(`  ⚠️  组合成本 < $${(1 - parseFloat(initial)/100).toFixed(2)} 时跳过（敞口过大）`);
-    console.log(`  ⚠️  组合成本 > $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '2') / 100)).toFixed(2)} 时跳过（利润率过低）`);
+    console.log(`  ⚠️  组合成本 > $${(1 - parseFloat(config.MIN_ARBITRAGE_PERCENT || '6') / 100 / (1 + parseFloat(config.MIN_ARBITRAGE_PERCENT || '6') / 100)).toFixed(2)} 时跳过（利润率过低）`);
     console.log('');
     
     log.success('配置已保存到 .env');

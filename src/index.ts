@@ -400,7 +400,11 @@ const mainLoop = async () => {
     let lastPositionReport = Date.now();  // 持仓汇报时间
     let lastPriceLog = Date.now();
     let lastApiSyncTime = Date.now();  // API 仓位同步时间
-    const API_SYNC_INTERVAL = 30000;   // 30 秒同步一次
+    const API_SYNC_INTERVAL = 10000;   // 10 秒同步一次
+    
+    // 🔄 事件参与状态追踪
+    let hasParticipatedInEvent = false;  // 是否已参与过事件（有过交易或仓位）
+    let eventCompletedLogged = false;    // 是否已打印事件完成日志（避免重复）
     
     // 高速主循环
     while (true) {
@@ -415,9 +419,36 @@ const mainLoop = async () => {
                 await syncPositionsFromAPI();
             }
             
+            // 🔄 检查是否应该停止开新仓（事件结束后不继续）
+            const currentPosStats = getPositionStats();
+            const currentOverallStats = getOverallStats();
+            
+            // 更新参与状态：有交易记录或有仓位就算已参与
+            if (currentOverallStats.totalSettled > 0 || currentPosStats.totalPositions > 0 || stats.tradesExecuted > 0) {
+                hasParticipatedInEvent = true;
+            }
+            
+            // 判断是否应该停止开新仓
+            // 条件：不继续参与 + 已参与过 + 当前无仓位 = 事件已完成，等待模式
+            const shouldStopNewTrades = !CONFIG.CONTINUE_NEXT_EVENT && 
+                                        hasParticipatedInEvent && 
+                                        currentPosStats.totalPositions === 0;
+            
+            // 打印一次事件完成日志
+            if (shouldStopNewTrades && !eventCompletedLogged) {
+                eventCompletedLogged = true;
+                Logger.divider();
+                Logger.success('🏁 事件已结算完毕，进入观望模式（不参与新事件）');
+                Logger.info(`   已结算: ${currentOverallStats.totalSettled} 个事件`);
+                Logger.info(`   总盈亏: $${currentOverallStats.totalProfit.toFixed(2)}`);
+                Logger.info(`   胜率: ${currentOverallStats.winRate.toFixed(1)}%`);
+                Logger.divider();
+                Logger.info('💡 如需继续参与新事件，请设置 CONTINUE_NEXT_EVENT=true 并重启');
+            }
+            
             // 检查对冲/止损状态（优先于套利）
             let opportunities: ArbitrageOpportunity[] = [];
-            let shouldSkipArbitrage = false;
+            let shouldSkipArbitrage = shouldStopNewTrades;  // 如果已完成事件，跳过套利
             
             // 币安波动率检查（无论什么模式都要检查）
             for (const timeGroup of ['15min', '1hr'] as const) {
@@ -581,6 +612,7 @@ const mainLoop = async () => {
                 
                 await checkEventSwitch();  // 检查 15 分钟事件是否切换
                 lastPriceLog = now;
+                
             }
             
             // 止损检查（高频，由止损模块内部控制频率）

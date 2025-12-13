@@ -992,7 +992,7 @@ export const generateHedgeOpportunities = (timeGroup: TimeGroup): ArbitrageOppor
 
 // 同池诊断日志冷却
 let lastSamePoolDiagTime = 0;
-const SAME_POOL_DIAG_COOLDOWN = 30000;
+const SAME_POOL_DIAG_COOLDOWN = 10000;  // 10 秒
 let lastEmergencyLogTime = 0;
 
 /**

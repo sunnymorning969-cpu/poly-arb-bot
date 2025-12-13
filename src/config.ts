@@ -101,6 +101,11 @@ export const CONFIG = {
     // 启动时清除历史数据（true=从零开始）
     CLEAR_DATA_ON_START: process.env.CLEAR_DATA_ON_START === 'true',
     
+    // 事件结束后是否继续参与下一个事件
+    // false(默认)：事件结算后进入观望模式，不开新仓，机器人继续运行
+    // true：事件结算后自动参与下一个事件
+    CONTINUE_NEXT_EVENT: process.env.CONTINUE_NEXT_EVENT === 'true',
+    
     // ========== 止损配置 ==========
     // 止损功能开关
     STOP_LOSS_ENABLED: process.env.STOP_LOSS_ENABLED !== 'false',
