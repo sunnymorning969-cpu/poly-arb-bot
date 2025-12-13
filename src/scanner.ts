@@ -1052,12 +1052,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const shouldLog = now - lastSamePoolDiagTime >= SAME_POOL_DIAG_COOLDOWN;
     if (shouldLog) {
         lastSamePoolDiagTime = now;
-        if (avgPrices.btc) {
-            Logger.info(`📊 [同池诊断] BTC: Up=${avgPrices.btc.upShares.toFixed(0)}@$${avgPrices.btc.upAvgPrice.toFixed(3)} Down=${avgPrices.btc.downShares.toFixed(0)}@$${avgPrices.btc.downAvgPrice.toFixed(3)} imbalance=${avgPrices.btc.imbalance.toFixed(0)} 平衡${btcBalance.toFixed(0)}%`);
-        }
-        if (avgPrices.eth) {
-            Logger.info(`📊 [同池诊断] ETH: Up=${avgPrices.eth.upShares.toFixed(0)}@$${avgPrices.eth.upAvgPrice.toFixed(3)} Down=${avgPrices.eth.downShares.toFixed(0)}@$${avgPrices.eth.downAvgPrice.toFixed(3)} imbalance=${avgPrices.eth.imbalance.toFixed(0)} 平衡${ethBalance.toFixed(0)}%`);
-        }
+        // 始终打印同池诊断（不管是否有仓位）
+        Logger.info(`📊 [同池诊断] ${timeGroup} BTC: Up=${avgPrices.btc?.upShares.toFixed(0) || 0}@$${avgPrices.btc?.upAvgPrice.toFixed(3) || 0} Down=${avgPrices.btc?.downShares.toFixed(0) || 0}@$${avgPrices.btc?.downAvgPrice.toFixed(3) || 0} imb=${avgPrices.btc?.imbalance.toFixed(0) || 0} 平衡${btcBalance.toFixed(0)}%`);
+        Logger.info(`📊 [同池诊断] ${timeGroup} ETH: Up=${avgPrices.eth?.upShares.toFixed(0) || 0}@$${avgPrices.eth?.upAvgPrice.toFixed(3) || 0} Down=${avgPrices.eth?.downShares.toFixed(0) || 0}@$${avgPrices.eth?.downAvgPrice.toFixed(3) || 0} imb=${avgPrices.eth?.imbalance.toFixed(0) || 0} 平衡${ethBalance.toFixed(0)}%`);
     }
     
     let btcMarketData: { conditionId: string; market: PolymarketMarket; upToken: any; downToken: any; upBook: OrderBookData; downBook: OrderBookData } | null = null;

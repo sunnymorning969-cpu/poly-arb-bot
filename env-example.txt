@@ -41,7 +41,8 @@ MAX_ARBITRAGE_PERCENT_TIGHTEN_MINUTES=13
 # 启用同池增持（在单个池内平衡 Up/Down）
 SAME_POOL_REBALANCE_ENABLED=true
 # 同池安全边际（%）：允许组合成本亏损的百分比，换取更高成交率
-# 公式：maxPrice = (1 - 对手方均价) × (1 + safetyMargin%)
+# 公式：maxPrice = (1 - 已持仓均价) × (1 + safetyMargin%)
+# 例如：持有 Up 均价 $0.60，safetyMargin=5% → Down 最高买价 = (1-0.60)×1.05 = $0.42
 # 例如：Up均价 $0.45, safetyMargin=2% → maxPrice = 0.55 × 1.02 = $0.561
 SAME_POOL_SAFETY_MARGIN=2
 

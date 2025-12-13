@@ -180,8 +180,9 @@ const selectOpportunities = (
     const selected: ArbitrageOpportunity[] = [];
     
     for (const opp of opportunities) {
-        // 如果是对冲交易，直接执行，不受并行数量限制
-        if (opp.isHedge) {
+        // 如果是对冲交易或同池增持，直接执行，不受并行数量限制
+        // 同池增持需要尽快平衡仓位，不应该被跳过
+        if (opp.isHedge || opp.isSamePoolRebalance) {
             selected.push(opp);
             continue;
         }
