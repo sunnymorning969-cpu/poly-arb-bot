@@ -57,6 +57,14 @@ export const CONFIG = {
     // 避免在走势极端时（如 BTC Down $0.10）进行高风险套利
     MIN_CROSS_POOL_SINGLE_PRICE: parseFloat(process.env.MIN_CROSS_POOL_SINGLE_PRICE || '0.25'),
     
+    // 跨池套利最小第一档深度（$）：两边第一档深度都必须 >= 此值
+    // 防止深度太小导致一边吃满一边吃不到
+    MIN_CROSS_POOL_DEPTH_USD: parseFloat(process.env.MIN_CROSS_POOL_DEPTH_USD || '5'),
+    
+    // 跨池部分成交冷却时间（毫秒）：部分成交后暂停跨池套利
+    // 等待订单簿更新，防止重复下单导致单边增长
+    CROSS_POOL_PARTIAL_COOLDOWN_MS: parseInt(process.env.CROSS_POOL_PARTIAL_COOLDOWN_MS || '1500'),
+    
     // 最小套利利润率（低于此值不交易）
     MIN_ARBITRAGE_PERCENT: parseFloat(process.env.MIN_ARBITRAGE_PERCENT || '0.1'),
     

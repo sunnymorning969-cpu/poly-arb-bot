@@ -35,6 +35,33 @@ const SYNC_COOLDOWN_MS = 5000;   // 5 秒同步一次
 // Key 格式：`${timeGroup}-${asset}-${side}`，例如 `15min-btc-down`
 const activeSamePoolExecutions = new Set<string>();
 
+// 🔧 跨池部分成交冷却：部分成交后暂停，等待订单簿更新
+// Key 格式：`${timeGroup}`，Value: 上次部分成交的时间戳
+const crossPoolPartialCooldown = new Map<string, number>();
+
+// 检查跨池是否在部分成交冷却中
+export const isCrossPoolOnPartialCooldown = (timeGroup: string): boolean => {
+    const lastTime = crossPoolPartialCooldown.get(timeGroup);
+    if (!lastTime) return false;
+    
+    if (Date.now() - lastTime > CONFIG.CROSS_POOL_PARTIAL_COOLDOWN_MS) {
+        crossPoolPartialCooldown.delete(timeGroup);
+        return false;
+    }
+    return true;
+};
+
+// 记录部分成交（设置冷却）
+const recordPartialCooldown = (timeGroup: string): void => {
+    crossPoolPartialCooldown.set(timeGroup, Date.now());
+    Logger.warning(`⏸️ 跨池部分成交，${timeGroup} 冷却 ${CONFIG.CROSS_POOL_PARTIAL_COOLDOWN_MS}ms，等待订单簿更新`);
+};
+
+// 清除冷却（两边都成功时）
+const clearPartialCooldown = (timeGroup: string): void => {
+    crossPoolPartialCooldown.delete(timeGroup);
+};
+
 export const getSamePoolLockKey = (timeGroup: string, asset: string, side: string): string => {
     return `${timeGroup}-${asset}-${side}`;
 };
@@ -613,6 +640,9 @@ export const executeArbitrage = async (
     // 包装整个执行逻辑，确保锁被释放
     try {
         return await executeArbitrageInternal(opportunity, samePoolLockKey);
+        // 🔧 不需要冷却！
+        // - 成功：updatePosition 更新仓位 → imbalance 减少 → 自然不会生成相同机会
+        // - 失败：仓位不变 → 还是失衡 → 扫描会检查价格/深度 → 条件不满足就不生成机会
     } finally {
         // 无论成功失败，释放锁
         if (samePoolLockKey) {
@@ -903,14 +933,26 @@ const executeArbitrageInternal = async (
         // 检查是否部分成交（buy_both 时只有一边成功）
         if (action === 'buy_both') {
             if (upResult.success && !downResult.success) {
-                Logger.warning(`⚠️ ${modeTag} ${timeTag} ${poolTag} 部分成交: Up ✅ ${upResult.filled.toFixed(0)} | Down ❌ 失败 | 需要后续补仓 Down`);
+                Logger.warning(`⚠️ ${modeTag} ${timeTag} ${poolTag} 部分成交: Up ✅ ${upResult.filled.toFixed(0)} | Down ❌ 失败`);
+                // 🔧 设置 1.5 秒冷却，等待订单簿更新
+                if (opportunity.isCrossPool && opportunity.timeGroup) {
+                    recordPartialCooldown(opportunity.timeGroup);
+                }
             } else if (!upResult.success && downResult.success) {
-                Logger.warning(`⚠️ ${modeTag} ${timeTag} ${poolTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)} | 需要后续补仓 Up`);
+                Logger.warning(`⚠️ ${modeTag} ${timeTag} ${poolTag} 部分成交: Up ❌ 失败 | Down ✅ ${downResult.filled.toFixed(0)}`);
+                // 🔧 设置 1.5 秒冷却
+                if (opportunity.isCrossPool && opportunity.timeGroup) {
+                    recordPartialCooldown(opportunity.timeGroup);
+                }
             } else {
                 // 两边都成功 - 显示详细成本明细
                 const upCostStr = `${upResult.filled.toFixed(1)}×$${upResult.avgPrice.toFixed(2)}`;
                 const downCostStr = `${downResult.filled.toFixed(1)}×$${downResult.avgPrice.toFixed(2)}`;
                 Logger.arbitrage(`${modeTag} ${timeTag} ${poolTag} 成交: Up(${upCostStr}) Down(${downCostStr}) | 本次$${totalCost.toFixed(2)} | 利润$${expectedProfit.toFixed(2)} | 本轮$${groupCost.toFixed(2)}`);
+                // 🔧 两边都成功，清除冷却
+                if (opportunity.isCrossPool && opportunity.timeGroup) {
+                    clearPartialCooldown(opportunity.timeGroup);
+                }
             }
         } else {
             // 单边买入

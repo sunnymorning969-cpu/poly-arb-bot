@@ -14,7 +14,7 @@ import { orderBookManager, OrderBookData } from './orderbook-ws';
 import { getEventCostAnalysis, predictCostAfterBuy, getGroupCostAnalysis, predictGroupCostAfterBuy, getTimeGroup, TimeGroup, getAssetAvgPrices } from './positions';
 import { updateTokenMap, clearTriggeredStopLoss, printEventSummary, clearExtremeImbalance, setEmergencyMode, isInEmergencyMode, clearEmergencyMode } from './stopLoss';
 import { getGroupPositionSummary, calculateHedgeNeeded, startHedging, isHedging, isHedgeCompleted, completeHedging, stopHedging, shouldPrintHedgeLog, canExecuteHedge, getRemainingHedge } from './hedging';
-import { isSamePoolLocked } from './executor';
+import { isSamePoolLocked, isCrossPoolOnPartialCooldown } from './executor';
 
 // 扫描级别的冷却记录（防止重复检测）
 const scanCooldown = new Map<string, number>();
@@ -590,11 +590,9 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         const upIsCheap = cheapestUp.upBook.bestAsk < 0.50;
         const downIsCheap = cheapestDown.downBook.bestAsk < 0.50;
         
-        // 获取价格和深度（已在选择时验证过）
+        // 获取第一档价格（跨池只吃第一档）
         const upPrice = cheapestUp.upBook.bestAsk;
         const downPrice = cheapestDown.downBook.bestAsk;
-        const upSize = cheapestUp.upBook.bestAskSize;
-        const downSize = cheapestDown.downBook.bestAskSize;
         
         // 策略 1: 真正的套利机会（Up + Down < $1.00）
         if (isRealArbitrage && crossPoolProfit >= CONFIG.MIN_ARBITRAGE_PERCENT) {
@@ -618,6 +616,31 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
         
         // 只添加有动作的机会
         if (tradingAction !== 'wait') {
+            // 🔧 关键检查：是否在部分成交冷却中？
+            // 部分成交后冷却 1.5 秒，等待订单簿更新
+            if (isCrossPool && isCrossPoolOnPartialCooldown(timeGroup)) {
+                if (!silent) {
+                    Logger.info(`⏸️ [${timeGroup}] 部分成交冷却中，等待订单簿更新`);
+                }
+                continue;
+            }
+            
+            const upFirstSize = cheapestUp.upBook.bestAskSize;
+            const downFirstSize = cheapestDown.downBook.bestAskSize;
+            
+            // 🔧 深度检查：第一档深度（折U）>= max(2 × MAX_ORDER_SIZE_USD, MIN_CROSS_POOL_DEPTH_USD)
+            // 用 MIN_CROSS_POOL_DEPTH_USD 保底，防止 MAX_ORDER_SIZE_USD 很小时深度限制也太小
+            const minDepthRequired = Math.max(CONFIG.MAX_ORDER_SIZE_USD * 2, CONFIG.MIN_CROSS_POOL_DEPTH_USD);
+            const upFirstDepthValue = upFirstSize * upPrice;
+            const downFirstDepthValue = downFirstSize * downPrice;
+            
+            if (isCrossPool && (upFirstDepthValue < minDepthRequired || downFirstDepthValue < minDepthRequired)) {
+                if (!silent) {
+                    Logger.info(`⏸️ [${timeGroup}] 第一档深度不足，需≥$${minDepthRequired.toFixed(2)}：Up=$${upFirstDepthValue.toFixed(2)} Down=$${downFirstDepthValue.toFixed(2)}`);
+                }
+                continue;
+            }
+            
             // 记录组级别冷却，防止重复扫描
             recordGroupScan(timeGroup);
             
@@ -642,8 +665,8 @@ export const scanArbitrageOpportunities = async (silent: boolean = false): Promi
                 downConditionId: cheapestDown.conditionId,
                 upAskPrice: cheapestUp.upBook.bestAsk,
                 downAskPrice: cheapestDown.downBook.bestAsk,
-                upAskSize: cheapestUp.upBook.bestAskSize,
-                downAskSize: cheapestDown.downBook.bestAskSize,
+                upAskSize: upFirstSize,       // 第一档深度
+                downAskSize: downFirstSize,   // 第一档深度
                 combinedCost: crossPoolCost,
                 profitPercent: crossPoolProfit,
                 maxShares,
@@ -1083,8 +1106,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const safetyMargin = CONFIG.SAME_POOL_SAFETY_MARGIN / 100;
     
     // BTC 池：Up > Down，买入 Down
-    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会（防止并发导致过度购买）
-    if (avgPrices.btc && avgPrices.btc.imbalance > 0 && !isSamePoolLocked(timeGroup, 'btc', 'down')) {
+    // 🔒 锁：防止同类型同池并发执行（等待上一个执行完并更新仓位后再判断）
+    if (avgPrices.btc && avgPrices.btc.imbalance > 0 && 
+        !isSamePoolLocked(timeGroup, 'btc', 'down')) {
         const btcUpAvgPrice = avgPrices.btc.upAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.downBook.asks || [];
@@ -1177,8 +1201,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // BTC 池：Down > Up，买入 Up
-    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
-    if (avgPrices.btc && avgPrices.btc.imbalance < 0 && !isSamePoolLocked(timeGroup, 'btc', 'up')) {
+    // 🔒 锁：防止同类型同池并发执行
+    if (avgPrices.btc && avgPrices.btc.imbalance < 0 && 
+        !isSamePoolLocked(timeGroup, 'btc', 'up')) {
         const btcDownAvgPrice = avgPrices.btc.downAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = btcMarketData.upBook.asks || [];
@@ -1261,8 +1286,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // ETH 池：Down > Up，买入 Up
-    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
-    if (avgPrices.eth && avgPrices.eth.imbalance < 0 && !isSamePoolLocked(timeGroup, 'eth', 'up')) {
+    // 🔒 锁：防止同类型同池并发执行
+    if (avgPrices.eth && avgPrices.eth.imbalance < 0 && 
+        !isSamePoolLocked(timeGroup, 'eth', 'up')) {
         const ethDownAvgPrice = avgPrices.eth.downAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.upBook.asks || [];
@@ -1351,8 +1377,9 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     }
     
     // ETH 池：Up > Down，买入 Down
-    // 🔒 关键修复：如果已经有同类型同池增持在执行，不生成新机会
-    if (avgPrices.eth && avgPrices.eth.imbalance > 0 && !isSamePoolLocked(timeGroup, 'eth', 'down')) {
+    // 🔒 锁：防止同类型同池并发执行
+    if (avgPrices.eth && avgPrices.eth.imbalance > 0 && 
+        !isSamePoolLocked(timeGroup, 'eth', 'down')) {
         const ethUpAvgPrice = avgPrices.eth.upAvgPrice;
         // asks 数组现在由增量更新维护，可以吃多档深度
         const asks = ethMarketData.downBook.asks || [];

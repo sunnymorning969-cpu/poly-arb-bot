@@ -530,19 +530,29 @@ const mainLoop = async () => {
                 if (extremeImbalanceGroups.size > 0) {
                     // 不做任何套利，等待卖出完成
                 } else {
-                    // 如果有紧急平衡，只停止跨池，继续同池
+                    // 正常模式：扫描跨池套利机会
+                    // 注：部分成交跳过相同机会的检查已在 scanner.ts 中实现
+                    // 注：深度检查（>= 2 * MAX_ORDER_SIZE_USD）也在 scanner.ts 中实现
                     if (emergencyBalanceGroups.size === 0) {
-                        // 正常模式：扫描跨池套利机会
                         opportunities = await scanArbitrageOpportunities(true);
                     }
                     
                     // 同池增持机会（紧急平衡模式下继续，会放宽限制）
+                    // 🔧 优化：只在有失衡时才扫描，不需要每次循环都扫描
                     if (CONFIG.SAME_POOL_REBALANCE_ENABLED) {
                         for (const timeGroup of ['15min', '1hr'] as const) {
                             // 极端不平衡模式下不做同池
                             if (!extremeImbalanceGroups.has(timeGroup)) {
-                                const samePoolOpps = generateSamePoolOpportunities(timeGroup);
-                                opportunities.push(...samePoolOpps);
+                                // 先快速检查是否有失衡，有失衡才扫描机会
+                                const avgPrices = getAssetAvgPrices(timeGroup);
+                                const btcImbalance = avgPrices.btc?.imbalance || 0;
+                                const ethImbalance = avgPrices.eth?.imbalance || 0;
+                                
+                                // 只有存在失衡时才扫描同池机会
+                                if (btcImbalance !== 0 || ethImbalance !== 0) {
+                                    const samePoolOpps = generateSamePoolOpportunities(timeGroup);
+                                    opportunities.push(...samePoolOpps);
+                                }
                             }
                         }
                     }

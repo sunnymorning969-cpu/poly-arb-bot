@@ -83,6 +83,8 @@ const saveConfig = (config: Record<string, string>): void => {
         `MAX_ORDER_SIZE_USD=${config.MAX_ORDER_SIZE_USD || '14'}`,
         `PRICE_TOLERANCE_PERCENT=${config.PRICE_TOLERANCE_PERCENT || '0.5'}`,
         `MIN_CROSS_POOL_SINGLE_PRICE=${config.MIN_CROSS_POOL_SINGLE_PRICE || '0.25'}`,
+        `MIN_CROSS_POOL_DEPTH_USD=${config.MIN_CROSS_POOL_DEPTH_USD || '5'}`,
+        `CROSS_POOL_PARTIAL_COOLDOWN_MS=${config.CROSS_POOL_PARTIAL_COOLDOWN_MS || '1500'}`,
         `MIN_PROFIT_USD=${config.MIN_PROFIT_USD || '0.01'}`,
         `MIN_ARBITRAGE_PERCENT=${config.MIN_ARBITRAGE_PERCENT || '6'}`,
         `MAX_ARBITRAGE_PERCENT_INITIAL=${config.MAX_ARBITRAGE_PERCENT_INITIAL || '30'}`,
