@@ -518,25 +518,15 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
     const btcStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     
-    const now = Date.now();
-    
     for (const pos of positions.values()) {
         // 🔧 修复：只用 slug 判断资产类型（title 可能同时包含 BTC 和 ETH）
         const slugLower = pos.slug.toLowerCase();
         const titleLower = pos.title.toLowerCase();
         const combined = slugLower + ' ' + titleLower;
         
-        // 🔧 关键修复：检查事件是否已过期（slug 中的时间戳）
-        // slug 格式：eth-updown-15m-1765622700，最后的数字是结束时间戳（秒）
-        const timestampMatch = slugLower.match(/(\d{10})$/);
-        if (timestampMatch) {
-            const endTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
-            // 如果事件已经结束超过 2 分钟，跳过（等待结算清理）
-            if (endTimestamp < now - 2 * 60 * 1000) {
-                Logger.info(`   🔍 [过期跳过] ${pos.slug.slice(0, 25)} endTs=${endTimestamp} now=${now} diff=${((now - endTimestamp)/1000/60).toFixed(1)}分钟`);
-                continue;  // 跳过已过期的事件
-            }
-        }
+        // ⚠️ 注意：不在这里做过期检查！
+        // 过期仓位由 syncPositionsFromAPI 的删除逻辑处理
+        // 这里直接信任 positions Map 中的数据
         
         // 判断是否属于指定 timeGroup
         // 15min 事件通常在 title 中有 "5:45PM-6:00PM" 等 15 分钟间隔
