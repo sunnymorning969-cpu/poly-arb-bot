@@ -1052,7 +1052,13 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
     const shouldLog = now - lastSamePoolDiagTime >= SAME_POOL_DIAG_COOLDOWN;
     if (shouldLog) {
         lastSamePoolDiagTime = now;
-        // 只在有仓位时打印诊断
+        
+        // 🔍 调试：始终打印 avgPrices 状态
+        const btcInfo = avgPrices.btc ? `Up=${avgPrices.btc.upShares.toFixed(0)} Down=${avgPrices.btc.downShares.toFixed(0)}` : 'null';
+        const ethInfo = avgPrices.eth ? `Up=${avgPrices.eth.upShares.toFixed(0)} Down=${avgPrices.eth.downShares.toFixed(0)}` : 'null';
+        Logger.info(`🔍 [同池检查] ${timeGroup} getAssetAvgPrices: BTC(${btcInfo}) ETH(${ethInfo})`);
+        
+        // 只在有仓位时打印详细诊断
         if (avgPrices.btc && (avgPrices.btc.upShares > 0 || avgPrices.btc.downShares > 0)) {
             Logger.info(`📊 [同池诊断] ${timeGroup} BTC: Up=${avgPrices.btc.upShares.toFixed(0)}@$${avgPrices.btc.upAvgPrice.toFixed(3)} Down=${avgPrices.btc.downShares.toFixed(0)}@$${avgPrices.btc.downAvgPrice.toFixed(3)} imb=${avgPrices.btc.imbalance.toFixed(0)} 平衡${btcBalance.toFixed(0)}%`);
         }

@@ -533,6 +533,7 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
             const endTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
             // 如果事件已经结束超过 2 分钟，跳过（等待结算清理）
             if (endTimestamp < now - 2 * 60 * 1000) {
+                Logger.info(`   🔍 [过期跳过] ${pos.slug.slice(0, 25)} endTs=${endTimestamp} now=${now} diff=${((now - endTimestamp)/1000/60).toFixed(1)}分钟`);
                 continue;  // 跳过已过期的事件
             }
         }
