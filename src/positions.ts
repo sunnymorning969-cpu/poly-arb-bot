@@ -1183,10 +1183,14 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
             }
             
             // 🔧 关键修复：跳过已过期的事件，避免重新创建已赎回的仓位
-            // slug 格式：eth-updown-15m-1765622700，最后的数字是结束时间戳（秒）
+            // slug 格式：eth-updown-15m-1765622700，最后的数字是事件**开始**时间戳（秒）
+            // 15分钟事件的结束时间 = 开始时间 + 15分钟
             const timestampMatch = slugLower.match(/(\d{10})$/);
             if (timestampMatch) {
-                const endTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
+                const startTimestamp = parseInt(timestampMatch[1]) * 1000;  // 转换为毫秒
+                const is15min = slugLower.includes('15m');
+                const eventDuration = is15min ? 15 * 60 * 1000 : 60 * 60 * 1000;  // 15分钟或1小时
+                const endTimestamp = startTimestamp + eventDuration;
                 const now = Date.now();
                 // 如果事件已经结束超过 2 分钟，跳过（已赎回，API 返回有延迟）
                 if (endTimestamp < now - 2 * 60 * 1000) {
