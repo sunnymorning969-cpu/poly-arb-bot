@@ -411,16 +411,9 @@ const executeBuy = async (
     
     // 计算限价：加容差提高成交率
     // FAK 订单的 price 是最高可接受价格，如果不加容差，市场轻微波动就会导致不成交
-    let orderPrice: number;
-    if (isSamePool) {
-        // 同池增持：在 SAME_POOL_SAFETY_MARGIN 基础上再加 PRICE_TOLERANCE_PERCENT
-        const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
-        orderPrice = Math.min(limitPrice * tolerance, 0.99);
-    } else {
-        // 跨池套利：加 1% 容差应对市场微小波动
-        const crossPoolTolerance = 1.01;
-        orderPrice = Math.min(limitPrice * crossPoolTolerance, 0.99);
-    }
+    // 🔧 统一使用 PRICE_TOLERANCE_PERCENT，跨池和同池都生效
+    const tolerance = 1 + (CONFIG.PRICE_TOLERANCE_PERCENT / 100);
+    const orderPrice = Math.min(limitPrice * tolerance, 0.99);
     
     // 用 orderPrice 计算 amount，尽可能多吃深度
     const amount = shares * orderPrice;
@@ -443,11 +436,39 @@ const executeBuy = async (
         const resp = await client.postOrder(signedOrder, OrderType.FAK);
         
         if (resp.success) {
-            // 🔧 修复：使用 API 返回的实际成交数量，而不是请求数量
-            // takingAmount 是买到的 shares（单位：10^6）
-            // makingAmount 是支付的 USDC（单位：10^6）
-            const actualShares = resp.takingAmount ? parseFloat(resp.takingAmount) / 1e6 : shares;
-            const actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
+            // 🔍 调试：打印 API 返回的所有字段
+            Logger.info(`🔍 API响应字段: ${Object.keys(resp).join(', ')}`);
+            Logger.info(`🔍 takingAmount=${resp.takingAmount} makingAmount=${resp.makingAmount} fills=${JSON.stringify(resp.fills || resp.matched || []).slice(0,100)}`);
+            
+            // 🔧 尝试从多个可能的字段获取成交数量
+            let actualShares = 0;
+            let actualCost = 0;
+            
+            // 方式1: takingAmount/makingAmount
+            if (resp.takingAmount) {
+                actualShares = parseFloat(resp.takingAmount) / 1e6;
+                actualCost = resp.makingAmount ? parseFloat(resp.makingAmount) / 1e6 : amount;
+            }
+            // 方式2: fills 数组
+            else if (resp.fills && Array.isArray(resp.fills) && resp.fills.length > 0) {
+                for (const fill of resp.fills) {
+                    actualShares += parseFloat(fill.size || fill.amount || 0);
+                    actualCost += parseFloat(fill.price || 0) * parseFloat(fill.size || fill.amount || 0);
+                }
+            }
+            // 方式3: matched 数组
+            else if (resp.matched && Array.isArray(resp.matched) && resp.matched.length > 0) {
+                for (const match of resp.matched) {
+                    actualShares += parseFloat(match.size || match.amount || 0);
+                    actualCost += parseFloat(match.price || 0) * parseFloat(match.size || match.amount || 0);
+                }
+            }
+            // 方式4: 回退到请求值
+            else {
+                actualShares = shares;
+                actualCost = amount;
+            }
+            
             const actualAvgPrice = actualShares > 0 ? actualCost / actualShares : orderPrice;
             
             // 🔧 如果实际成交数量为 0，当作失败处理

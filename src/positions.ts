@@ -337,10 +337,29 @@ export type TimeGroup = '15min' | '1hr';
 /**
  * 获取仓位的时间段分组
  */
-export const getTimeGroup = (slug: string): TimeGroup => {
-    if (slug.includes('15m') || slug.includes('15min')) {
+export const getTimeGroup = (slug: string, title?: string): TimeGroup => {
+    const combined = (slug + ' ' + (title || '')).toLowerCase();
+    
+    // 检查明确的 15min 标记
+    if (combined.includes('15m') || combined.includes('15min') || combined.includes('15-min')) {
         return '15min';
     }
+    
+    // 检查 title 中的时间格式（如 5:45PM-6:00PM = 15分钟间隔）
+    if (title) {
+        const timeMatch = title.match(/(\d{1,2}):(\d{2}).*?-.*?(\d{1,2}):(\d{2})/);
+        if (timeMatch) {
+            const startHour = parseInt(timeMatch[1]);
+            const startMin = parseInt(timeMatch[2]);
+            const endHour = parseInt(timeMatch[3]);
+            const endMin = parseInt(timeMatch[4]);
+            const durationMin = (endHour * 60 + endMin) - (startHour * 60 + startMin);
+            if (durationMin === 15 || durationMin === -45) {
+                return '15min';
+            }
+        }
+    }
+    
     return '1hr';
 };
 
@@ -371,7 +390,7 @@ export const getGroupCostAnalysis = (timeGroup: TimeGroup): {
     let totalDownCost = 0;
     
     for (const pos of positions.values()) {
-        if (getTimeGroup(pos.slug) === timeGroup) {
+        if (getTimeGroup(pos.slug, pos.title) === timeGroup) {
             groupPositions.push(pos);
             totalUpShares += pos.upShares;
             totalDownShares += pos.downShares;
@@ -500,14 +519,32 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
     const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     
     for (const pos of positions.values()) {
+        // 🔧 修复：使用 slug 和 title 一起判断
+        const combined = (pos.slug + ' ' + pos.title).toLowerCase();
+        
         // 判断是否属于指定 timeGroup
-        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
+        // 15min 事件通常在 title 中有 "5:45PM-6:00PM" 等 15 分钟间隔
+        // 或 slug/title 中有 '15m', '15min', '15-min'
+        const has15minMarker = combined.includes('15m') || combined.includes('15min') || combined.includes('15-min');
+        // 如果没有明确标记，检查 title 中的时间格式（如 5:45-6:00 = 15分钟间隔）
+        const timeMatch = pos.title.match(/(\d{1,2}):(\d{2}).*?-.*?(\d{1,2}):(\d{2})/);
+        let is15minByTime = false;
+        if (timeMatch) {
+            const startHour = parseInt(timeMatch[1]);
+            const startMin = parseInt(timeMatch[2]);
+            const endHour = parseInt(timeMatch[3]);
+            const endMin = parseInt(timeMatch[4]);
+            const durationMin = (endHour * 60 + endMin) - (startHour * 60 + startMin);
+            is15minByTime = durationMin === 15 || durationMin === -45; // 处理跨小时
+        }
+        
+        const is15min = has15minMarker || is15minByTime;
         const posTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
         if (posTimeGroup !== timeGroup) continue;
         
-        // 判断是 BTC 还是 ETH
-        const isBtc = pos.slug.toLowerCase().includes('btc');
-        const isEth = pos.slug.toLowerCase().includes('eth');
+        // 🔧 修复：判断 BTC/ETH 也要检查 'bitcoin'/'ethereum'
+        const isBtc = combined.includes('btc') || combined.includes('bitcoin');
+        const isEth = combined.includes('eth') || combined.includes('ethereum');
         
         if (isBtc) {
             btcStats.upShares += pos.upShares;
@@ -677,8 +714,7 @@ export const settlePosition = (
         ethBalancePercent = balanceSnapshot.ethBalancePercent;
     } else {
         // 获取当前仓位
-        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
-        const timeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        const timeGroup = getTimeGroup(pos.slug, pos.title);
         const avgPrices = getAssetAvgPrices(timeGroup);
         
         btcUp = avgPrices.btc?.upShares || 0;
@@ -749,7 +785,7 @@ export const settleStopLoss = (
     // 找到该时间组的所有仓位
     const positionsToSettle: Position[] = [];
     for (const [conditionId, pos] of positions) {
-        if (getTimeGroup(pos.slug) === timeGroup) {
+        if (getTimeGroup(pos.slug, pos.title) === timeGroup) {
             positionsToSettle.push(pos);
         }
     }
@@ -995,8 +1031,7 @@ export const forceSettleByTimeGroup = async (timeGroup: TimeGroup): Promise<Sett
     const positionsToSettle: Array<{conditionId: string, pos: Position}> = [];
     
     for (const [conditionId, pos] of positions.entries()) {
-        const is15min = pos.slug.includes('15m') || pos.slug.includes('15min');
-        const posTimeGroup: TimeGroup = is15min ? '15min' : '1hr';
+        const posTimeGroup = getTimeGroup(pos.slug, pos.title);
         
         if (posTimeGroup !== timeGroup) continue;
         positionsToSettle.push({ conditionId, pos: { ...pos } });  // 复制一份
