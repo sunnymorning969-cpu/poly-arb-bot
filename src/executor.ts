@@ -640,12 +640,12 @@ const executeArbitrageInternal = async (
     }
     
     // 打印执行开始日志
-    const poolTag = opportunity.isCrossPool ? '🔀' : 
-                   opportunity.isSamePoolRebalance ? '🔄' : '📊';
+    const execPoolTag = opportunity.isCrossPool ? '🔀' : 
+                        opportunity.isSamePoolRebalance ? '🔄' : '📊';
     const assetInfo = opportunity.isSamePoolRebalance 
         ? `${opportunity.rebalanceAsset?.toUpperCase()}${opportunity.rebalanceSide === 'up' ? '↑' : '↓'}`
         : '';
-    Logger.info(`${poolTag} ${opportunity.timeGroup} ${assetInfo} 执行 ${action}: Up $${opportunity.upAskPrice.toFixed(3)} | Down $${opportunity.downAskPrice.toFixed(3)}`);
+    Logger.info(`${execPoolTag} ${opportunity.timeGroup} ${assetInfo} 执行 ${action}: Up $${opportunity.upAskPrice.toFixed(3)} | Down $${opportunity.downAskPrice.toFixed(3)}`);
     
     // 用 shares 数量下单，确保两边数量完全一致
     let upShares = 0;
