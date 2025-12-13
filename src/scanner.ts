@@ -1088,6 +1088,15 @@ export const generateSamePoolOpportunities = (timeGroup: TimeGroup): ArbitrageOp
         }
     }
     
+    // 🔍 调试：检查市场数据是否可用
+    if (shouldLog) {
+        const hasImbalance = (avgPrices.btc && avgPrices.btc.imbalance !== 0) || 
+                             (avgPrices.eth && avgPrices.eth.imbalance !== 0);
+        if (hasImbalance && (!btcMarketData || !ethMarketData)) {
+            Logger.warning(`⚠️ [同池阻塞] 有失衡但缺少市场数据: BTC市场=${btcMarketData ? '✓' : '✗'} ETH市场=${ethMarketData ? '✓' : '✗'} marketTokenMap大小=${marketTokenMap.size}`);
+        }
+    }
+    
     if (!btcMarketData || !ethMarketData) return opportunities;
     
     const endDate = btcMarketData.market.end_date_iso || '';
