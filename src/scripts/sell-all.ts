@@ -59,34 +59,43 @@ const isGnosisSafe = async (address: string): Promise<boolean> => {
 };
 
 /**
- * 初始化 CLOB Client（和主程序保持一致）
+ * 初始化 CLOB Client（和参考项目保持一致）
  */
 const initClient = async (): Promise<ClobClient> => {
+    // 创建 provider
+    const provider = new ethers.providers.JsonRpcProvider(CONFIG.RPC_URL);
+    
+    // 🔧 关键：wallet 必须带 provider（参考项目第 59 行）
+    const wallet = new ethers.Wallet(CONFIG.PRIVATE_KEY, provider);
+    
     // 检测钱包类型
     const isProxySafe = CONFIG.PROXY_WALLET ? await isGnosisSafe(CONFIG.PROXY_WALLET) : false;
     const signatureType = isProxySafe ? SignatureType.POLY_GNOSIS_SAFE : SignatureType.EOA;
     
     log.info(`钱包类型: ${isProxySafe ? 'Gnosis Safe' : 'EOA'}`);
     
-    // 使用不带 provider 的 wallet（CLOB client 需要）
-    const clobWallet = new ethers.Wallet(CONFIG.PRIVATE_KEY);
+    // 🔧 临时禁用 console 输出（避免 CLOB Client 内部错误日志）
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = function() {};
+    console.error = function() {};
     
     // 创建临时 client 获取 API Key
     let client = new ClobClient(
         CONFIG.CLOB_HTTP_URL,
         CONFIG.CHAIN_ID,
-        clobWallet,
+        wallet,
         undefined,
         signatureType,
         isProxySafe ? CONFIG.PROXY_WALLET : undefined
     );
     
-    // 获取 API Key
+    // 获取 API Key（先尝试创建，失败则派生）
     let creds: any;
     try {
         creds = await client.createApiKey();
     } catch {
-        // createApiKey 失败
+        // createApiKey 失败，静默处理
     }
     
     if (!creds?.key) {
@@ -97,6 +106,10 @@ const initClient = async (): Promise<ClobClient> => {
         }
     }
     
+    // 恢复 console 输出
+    console.log = originalLog;
+    console.error = originalError;
+    
     if (!creds?.key) {
         throw new Error('无法获取 API Key，请检查钱包配置');
     }
@@ -105,11 +118,38 @@ const initClient = async (): Promise<ClobClient> => {
     return new ClobClient(
         CONFIG.CLOB_HTTP_URL,
         CONFIG.CHAIN_ID,
-        clobWallet,
+        wallet,
         creds,
         signatureType,
         isProxySafe ? CONFIG.PROXY_WALLET : undefined
     );
+};
+
+/**
+ * 获取今天的日期字符串（用于匹配事件标题）
+ * 返回格式如 "December 14" 
+ */
+const getTodayDateString = (): string => {
+    const now = new Date();
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${months[now.getMonth()]} ${now.getDate()}`;
+};
+
+/**
+ * 检查仓位的 title 日期是否是今天（仅用于警告，不过滤）
+ */
+const checkPositionDate = (title: string): boolean => {
+    if (!title) return true;
+    
+    const todayStr = getTodayDateString();
+    const datePattern = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})/i;
+    const match = title.match(datePattern);
+    
+    if (!match) return true;
+    
+    const titleDateStr = `${match[1]} ${match[2]}`;
+    return titleDateStr.toLowerCase() === todayStr.toLowerCase();
 };
 
 /**
@@ -123,7 +163,23 @@ const getUserPositions = async () => {
         },
         timeout: 10000,
     });
-    return response.data || [];
+    
+    const positions = response.data || [];
+    
+    // 检查日期警告（不过滤，只警告）
+    let mismatchCount = 0;
+    for (const pos of positions) {
+        const title = pos.title || pos.market || '';
+        if (!checkPositionDate(title)) {
+            mismatchCount++;
+        }
+    }
+    
+    if (mismatchCount > 0) {
+        log.warning(`⚠️ ${mismatchCount} 个仓位的 title 日期不是今天（API 可能有延迟）`);
+    }
+    
+    return positions;
 };
 
 /**
@@ -159,6 +215,17 @@ const sellPosition = async (
     log.info(`卖出: ${title}`);
     log.info(`   目标: ${size.toFixed(2)} shares`);
     
+    // 🔧 卖出前更新 Polymarket 缓存
+    try {
+        log.info(`   🔄 更新缓存...`);
+        await client.updateBalanceAllowance({
+            asset_type: 'CONDITIONAL' as any,
+            token_id: tokenId,
+        });
+    } catch (e) {
+        log.warning(`   ⚠️ 缓存更新失败，继续尝试卖出`);
+    }
+    
     while (remaining > 0.1 && retries < maxRetries) {
         try {
             // 获取订单簿
@@ -176,12 +243,15 @@ const sellPosition = async (
                 break;
             }
             
-            // 获取买一价和深度
-            const bestBid = book.bids[0];
+            // 🔧 关键修复：bids 数组不是按价格排序的，需要找最高价！
+            const bestBid = book.bids.reduce((max, bid) => {
+                return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+            }, book.bids[0]);
+            
             const bidPrice = parseFloat(bestBid.price);
             const bidSize = parseFloat(bestBid.size);
             
-            log.info(`   🔍 解析: bidPrice=${bidPrice} bidSize=${bidSize}`);
+            log.info(`   🔍 最高出价: ${bidPrice.toFixed(3)} (${bidSize.toFixed(1)} shares)`);
             
             if (bidPrice <= 0.01) {
                 log.warning(`   价格过低 ($${bidPrice.toFixed(3)})，可能已结算`);
@@ -200,51 +270,26 @@ const sellPosition = async (
             
             log.info(`   📤 卖出 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)} (预期 $${expectedValue.toFixed(2)})`);
             
-            // 🔧 修复：卖出订单的 amount 应该是 USD 金额（shares * price）
-            // 稍微降低价格确保成交
-            const sellPrice = Math.floor(Math.max(0.01, bidPrice * 0.995) * 100) / 100;
-            const amountUSD = Math.floor(sellSize * sellPrice * 100) / 100;
-            
+            // 🔧 修复：卖出订单的 amount 是 shares 数量，不是 USD！
             const orderArgs = {
                 side: Side.SELL,
                 tokenID: tokenId,
-                amount: amountUSD,  // USD 金额
-                price: sellPrice,   // 稍低于买一价，确保成交
+                amount: sellSize,   // shares 数量！
+                price: bidPrice,    // 用最高出价
             };
             
-            log.info(`   🔍 下单参数: amount=${amountUSD} price=${sellPrice}`);
+            log.info(`   🔍 下单参数: amount=${sellSize.toFixed(2)} shares, price=$${bidPrice.toFixed(3)}`);
             
             const signedOrder = await client.createMarketOrder(orderArgs);
-            const resp = await client.postOrder(signedOrder, OrderType.FAK);  // FAK 允许部分成交
+            const resp = await client.postOrder(signedOrder, OrderType.FOK);  // FOK 确保全部成交
             
-            if (resp.success) {
-                // 🔧 修复：使用 API 返回的实际成交数量
-                // SELL 订单：takingAmount 是收到的 USDC，makingAmount 是卖出的 shares
-                let actualSold = sellSize;
-                let actualReceived = expectedValue;
-                
-                if (resp.makingAmount) {
-                    const rawSold = parseFloat(resp.makingAmount);
-                    // 智能判断单位
-                    actualSold = rawSold > 1000 ? rawSold / 1e6 : rawSold;
-                }
-                if (resp.takingAmount) {
-                    const rawReceived = parseFloat(resp.takingAmount);
-                    actualReceived = rawReceived > 1000 ? rawReceived / 1e6 : rawReceived;
-                }
-                
-                if (actualSold < 0.01) {
-                    retries++;
-                    log.warning(`   ⚠️ 成交0 shares (${retries}/${maxRetries})`);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    continue;
-                }
-                
-                totalSold += actualSold;
-                totalReceived += actualReceived;
-                remaining -= actualSold;
+            if (resp.success === true) {
+                const soldValue = sellSize * bidPrice;
+                totalSold += sellSize;
+                totalReceived += soldValue;
+                remaining -= sellSize;
                 retries = 0;  // 成功后重置重试计数
-                log.success(`   ✅ 成交 ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
+                log.success(`   ✅ 成交 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)} = $${soldValue.toFixed(2)}`);
                 
                 if (remaining > 0.1) {
                     log.info(`   剩余 ${remaining.toFixed(2)} shares...`);
@@ -297,13 +342,42 @@ const main = async () => {
     log.info(`发现 ${positions.length} 个持仓:`);
     console.log('');
     
-    // 显示持仓
+    // 显示持仓（带调试信息）
     let totalValue = 0;
+    let redeemableCount = 0;
+    let sellableCount = 0;
+    
     for (const pos of positions) {
-        console.log(`  • ${pos.title || pos.market}`);
-        console.log(`    ${pos.outcome}: ${pos.size.toFixed(2)} shares @ $${pos.currentPrice?.toFixed(3) || '?'}`);
-        console.log(`    价值: $${pos.currentValue?.toFixed(2) || '?'}`);
+        const curPrice = pos.currentPrice || pos.curPrice || 0;
+        const isRedeemable = pos.redeemable === true;
+        const isMergeable = pos.mergeable === true;
+        
+        // 判断是否已结算：价格接近 0 或 1，或标记为 redeemable
+        const isSettled = isRedeemable || curPrice <= 0.02 || curPrice >= 0.98;
+        
+        if (isSettled) {
+            redeemableCount++;
+            console.log(`  🔴 ${pos.title || pos.market} [已结算]`);
+        } else {
+            sellableCount++;
+            console.log(`  🟢 ${pos.title || pos.market}`);
+        }
+        
+        console.log(`    ${pos.outcome}: ${pos.size.toFixed(2)} shares @ $${curPrice.toFixed(3)}`);
+        console.log(`    价值: $${pos.currentValue?.toFixed(2) || '?'} | redeemable=${isRedeemable}`);
+        // 🔍 调试：打印完整的 slug 和 asset
+        console.log(`    📍 slug: ${pos.slug || pos.market || 'N/A'}`);
+        console.log(`    📍 asset: ${pos.asset}`);
+        console.log(`    📍 conditionId: ${pos.conditionId?.slice(0, 20)}...`);
         totalValue += pos.currentValue || 0;
+    }
+    
+    console.log('');
+    if (redeemableCount > 0) {
+        log.warning(`⚠️ ${redeemableCount} 个仓位已结算，请用 npm run redeem-all 赎回`);
+    }
+    if (sellableCount > 0) {
+        log.info(`✅ ${sellableCount} 个仓位可以卖出`);
     }
     console.log('');
     log.info(`总价值: $${totalValue.toFixed(2)}`);
