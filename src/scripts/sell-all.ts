@@ -162,7 +162,14 @@ const sellPosition = async (
     while (remaining > 0.1 && retries < maxRetries) {
         try {
             // 获取订单簿
+            log.info(`   🔍 查询订单簿: tokenId=${tokenId.slice(0, 20)}...`);
             const book = await client.getOrderBook(tokenId);
+            
+            // 🔍 调试：打印订单簿原始数据
+            log.info(`   🔍 订单簿: bids=${book.bids?.length || 0}个 asks=${book.asks?.length || 0}个`);
+            if (book.bids && book.bids.length > 0) {
+                log.info(`   🔍 买一: ${JSON.stringify(book.bids[0])}`);
+            }
             
             if (!book.bids || book.bids.length === 0) {
                 log.warning(`   无买单，可能已结算，请用 npm run redeem-all 赎回`);
@@ -173,6 +180,8 @@ const sellPosition = async (
             const bestBid = book.bids[0];
             const bidPrice = parseFloat(bestBid.price);
             const bidSize = parseFloat(bestBid.size);
+            
+            log.info(`   🔍 解析: bidPrice=${bidPrice} bidSize=${bidSize}`);
             
             if (bidPrice <= 0.01) {
                 log.warning(`   价格过低 ($${bidPrice.toFixed(3)})，可能已结算`);
@@ -191,23 +200,51 @@ const sellPosition = async (
             
             log.info(`   📤 卖出 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)} (预期 $${expectedValue.toFixed(2)})`);
             
-            // ⚠️ 关键：amount 是 shares 数量，不是 USD 金额！
+            // 🔧 修复：卖出订单的 amount 应该是 USD 金额（shares * price）
+            // 稍微降低价格确保成交
+            const sellPrice = Math.floor(Math.max(0.01, bidPrice * 0.995) * 100) / 100;
+            const amountUSD = Math.floor(sellSize * sellPrice * 100) / 100;
+            
             const orderArgs = {
                 side: Side.SELL,
                 tokenID: tokenId,
-                amount: sellSize,  // shares 数量
-                price: bidPrice,   // 用买一价，确保成交
+                amount: amountUSD,  // USD 金额
+                price: sellPrice,   // 稍低于买一价，确保成交
             };
             
+            log.info(`   🔍 下单参数: amount=${amountUSD} price=${sellPrice}`);
+            
             const signedOrder = await client.createMarketOrder(orderArgs);
-            const resp = await client.postOrder(signedOrder, OrderType.FOK);  // FOK 确保全部成交
+            const resp = await client.postOrder(signedOrder, OrderType.FAK);  // FAK 允许部分成交
             
             if (resp.success) {
-                totalSold += sellSize;
-                totalReceived += expectedValue;
-                remaining -= sellSize;
+                // 🔧 修复：使用 API 返回的实际成交数量
+                // SELL 订单：takingAmount 是收到的 USDC，makingAmount 是卖出的 shares
+                let actualSold = sellSize;
+                let actualReceived = expectedValue;
+                
+                if (resp.makingAmount) {
+                    const rawSold = parseFloat(resp.makingAmount);
+                    // 智能判断单位
+                    actualSold = rawSold > 1000 ? rawSold / 1e6 : rawSold;
+                }
+                if (resp.takingAmount) {
+                    const rawReceived = parseFloat(resp.takingAmount);
+                    actualReceived = rawReceived > 1000 ? rawReceived / 1e6 : rawReceived;
+                }
+                
+                if (actualSold < 0.01) {
+                    retries++;
+                    log.warning(`   ⚠️ 成交0 shares (${retries}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
+                
+                totalSold += actualSold;
+                totalReceived += actualReceived;
+                remaining -= actualSold;
                 retries = 0;  // 成功后重置重试计数
-                log.success(`   ✅ 成交 ${sellSize.toFixed(2)} shares @ $${bidPrice.toFixed(3)}`);
+                log.success(`   ✅ 成交 ${actualSold.toFixed(2)} shares @ $${(actualReceived/actualSold).toFixed(3)} = $${actualReceived.toFixed(2)}`);
                 
                 if (remaining > 0.1) {
                     log.info(`   剩余 ${remaining.toFixed(2)} shares...`);
