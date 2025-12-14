@@ -518,15 +518,27 @@ export const getAssetAvgPrices = (timeGroup: TimeGroup): {
     const btcStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     const ethStats = { upShares: 0, downShares: 0, upCost: 0, downCost: 0 };
     
+    // 🔧 关键修复：找出当前活跃事件的时间戳，只计算该事件的仓位
+    // 避免把已过期的旧事件和新事件累加在一起
+    const now = Date.now();
+    const eventDuration = timeGroup === '15min' ? 15 * 60 * 1000 : 60 * 60 * 1000;
+    
     for (const pos of positions.values()) {
         // 🔧 修复：只用 slug 判断资产类型（title 可能同时包含 BTC 和 ETH）
         const slugLower = pos.slug.toLowerCase();
         const titleLower = pos.title.toLowerCase();
         const combined = slugLower + ' ' + titleLower;
         
-        // ⚠️ 注意：不在这里做过期检查！
-        // 过期仓位由 syncPositionsFromAPI 的删除逻辑处理
-        // 这里直接信任 positions Map 中的数据
+        // 🔧 关键修复：检查事件是否已过期（只计算当前活跃事件）
+        const timestampMatch = slugLower.match(/(\d{10})$/);
+        if (timestampMatch) {
+            const startTimestamp = parseInt(timestampMatch[1]) * 1000;
+            const endTimestamp = startTimestamp + eventDuration;
+            // 如果事件已经结束，跳过（即使仓位还没被删除/赎回）
+            if (endTimestamp < now) {
+                continue;
+            }
+        }
         
         // 判断是否属于指定 timeGroup
         // 15min 事件通常在 title 中有 "5:45PM-6:00PM" 等 15 分钟间隔
@@ -1246,22 +1258,38 @@ export const syncPositionsFromAPI = async (): Promise<void> => {
                 const displayName = title.slice(0, 35) || effectiveSlug.slice(0, 30);
                 Logger.success(`🔄 创建仓位 ${displayName}: Up=${apiUpShares.toFixed(1)}@$${apiUpAvgPrice.toFixed(3)} Down=${apiDownShares.toFixed(1)}@$${apiDownAvgPrice.toFixed(3)}`);
             } else {
-                // 本地存在，检查是否需要校正
-                const upDiff = Math.abs(localPos.upShares - apiUpShares);
-                const downDiff = Math.abs(localPos.downShares - apiDownShares);
+                // 🔧 根本修复：完全信任本地交易记录，不用 API 数据覆盖
+                // 原因：API 数据有严重延迟和波动，不适合用于实时校正
+                // 
+                // 只在以下情况更新本地仓位：
+                // 1. 本地仓位为空（0/0），用 API 数据初始化
+                // 2. 本地仓位远小于 API（可能漏记了交易）
                 
-                if (upDiff > 0.5 || downDiff > 0.5) {
-                    Logger.warning(`🔄 仓位校正 ${localPos.slug.slice(0, 25)}: Up ${localPos.upShares.toFixed(1)}→${apiUpShares.toFixed(1)} Down ${localPos.downShares.toFixed(1)}→${apiDownShares.toFixed(1)}`);
-                    
+                const localTotal = localPos.upShares + localPos.downShares;
+                const apiTotal = apiUpShares + apiDownShares;
+                
+                // 情况1：本地为空，用 API 初始化
+                if (localTotal < 0.5 && apiTotal > 0.5) {
+                    Logger.info(`   📥 初始化仓位: ${localPos.slug.slice(0, 25)} API(${apiUpShares.toFixed(1)}/${apiDownShares.toFixed(1)})`);
                     localPos.upShares = apiUpShares;
                     localPos.downShares = apiDownShares;
                     localPos.upCost = apiUpShares * apiUpAvgPrice;
                     localPos.downCost = apiDownShares * apiDownAvgPrice;
                     localPos.lastUpdate = Date.now();
-                    
                     saveToStorage(localPos);
                     synced++;
                 }
+                // 情况2：API 显示的总量比本地大很多（可能漏记了），记录警告但不自动校正
+                else if (apiTotal > localTotal * 1.5 && apiTotal - localTotal > 10) {
+                    Logger.warning(`   ⚠️ API仓位偏大: ${localPos.slug.slice(0, 25)} 本地(${localPos.upShares.toFixed(0)}/${localPos.downShares.toFixed(0)}) API(${apiUpShares.toFixed(0)}/${apiDownShares.toFixed(0)}) - 保持本地数据`);
+                    // 不自动校正！保持本地数据
+                }
+                // 情况3：本地比 API 大（正常，因为本地先更新）
+                else if (localTotal > apiTotal) {
+                    // 正常情况，本地已通过 updatePosition 更新，API 还没同步
+                    // 静默忽略
+                }
+                // 其他情况：差异在正常范围内，忽略
             }
         }
         
